@@ -16,6 +16,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Config / secrets
+import os
+import streamlit as st
+
+# Load secrets from Streamlit (preferred)
+if hasattr(st, "secrets"):
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
+    EMAIL_USER = st.secrets.get("EMAIL_USER", None)
+    EMAIL_PASS = st.secrets.get("EMAIL_PASS", None)
+    ADMIN_USER = st.secrets.get("ADMIN_USER", "admin")
+    ADMIN_PASS = st.secrets.get("ADMIN_PASS", "admin123")
+    JWT_SECRET = st.secrets.get("JWT_SECRET", "super_secret_key")
+    MONGODB_URI = st.secrets.get("MONGODB_URI", None)
+
+# Fallback if testing locally with .env
+else:
+    from dotenv import load_dotenv
+    load_dotenv()
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    EMAIL_USER = os.getenv("EMAIL_USER")
+    EMAIL_PASS = os.getenv("EMAIL_PASS")
+    ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+    ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
+    JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_key")
+    MONGODB_URI = os.getenv("MONGODB_URI")
+
+# Now configure services
+import openai
+openai.api_key = OPENAI_API_KEY
+
+# Safety check
+if not OPENAI_API_KEY:
+    st.error("⚠️ OpenAI API key not found! Please add it to Streamlit Secrets.")
+
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
 
