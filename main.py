@@ -1,25 +1,21 @@
-# (Paste the full main.py content here)
-# main.py
-import streamlit as st
 import os
 import json
-from utils import (
-    extract_text_from_file, detect_mcq, parse_mcqs,
-    generate_mcqs_via_openai, save_quiz_to_db, list_quizzes_from_db,
-    get_quiz_by_id, record_attempt, send_result_email,
-    list_attempts, export_results_to_excel_bytes
-)
-from io import BytesIO
-from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Config / secrets
-import os
 import streamlit as st
-
-# Load secrets from Streamlit (preferred)
+import openai
+from datetime import datetime
+from utils import (
+    extract_text_from_file,
+    detect_mcq,
+    parse_mcqs,
+    generate_mcqs_via_openai,
+    send_result_email,
+    export_results_to_excel_bytes,
+    record_attempt,
+    list_attempts,
+)
+# ==========================
+# CONFIG / SECRETS SECTION
+# ==========================
 if hasattr(st, "secrets"):
     OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
     EMAIL_USER = st.secrets.get("EMAIL_USER", None)
@@ -27,9 +23,7 @@ if hasattr(st, "secrets"):
     ADMIN_USER = st.secrets.get("ADMIN_USER", "admin")
     ADMIN_PASS = st.secrets.get("ADMIN_PASS", "admin123")
     JWT_SECRET = st.secrets.get("JWT_SECRET", "super_secret_key")
-    MONGODB_URI = st.secrets.get("MONGODB_URI", None)
-
-# Fallback if testing locally with .env
+    MONGODB_URI = st.secrets.get("MONGODB_URI", "")
 else:
     from dotenv import load_dotenv
     load_dotenv()
@@ -39,248 +33,216 @@ else:
     ADMIN_USER = os.getenv("ADMIN_USER", "admin")
     ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
     JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_key")
-    MONGODB_URI = os.getenv("MONGODB_URI")
+    MONGODB_URI = os.getenv("MONGODB_URI", "")
 
-# Now configure services
-import openai
+# Configure OpenAI API
 openai.api_key = OPENAI_API_KEY
 
-# Safety check
-if not OPENAI_API_KEY:
-    st.error("⚠️ OpenAI API key not found! Please add it to Streamlit Secrets.")
+# ==========================
+# GLOBAL FALLBACK STORAGE (JSON)
+# ==========================
+LOCAL_QUIZ_FILE = "quizzes.json"
+LOCAL_RESULTS_FILE = "results.json"
 
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
+def load_local_data(file):
+    if os.path.exists(file):
+        try:
+            with open(file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
+def save_local_data(file, data):
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+# Load existing quizzes & results (if no DB)
+quizzes = load_local_data(LOCAL_QUIZ_FILE)
+results = load_local_data(LOCAL_RESULTS_FILE)
+
+# ==========================
+# STREAMLIT APP CONFIG
+# ==========================
 st.set_page_config(page_title="SmartQuiz AI", layout="wide")
 
-# Simple CSS for light/dark toggling (injected)
-LIGHT_STYLE = """
-:root {
-  --bg: #f8fafc;
-  --card: #ffffff;
-  --text: #0f172a;
-  --accent: #0ea5a3;
-}
-body { background: var(--bg)!important; color: var(--text)!important; }
-.stButton>button { background-color: var(--accent)!important; color: white !important; }
-.css-1d391kg { background: var(--card) !important; }
-"""
-DARK_STYLE = """
-:root {
-  --bg: #0b1220;
-  --card: #071124;
-  --text: #e6eef6;
-  --accent: #06b6d4;
-}
-body { background: var(--bg)!important; color: var(--text)!important; }
-.stButton>button { background-color: var(--accent)!important; color: white !important; }
-.css-1d391kg { background: var(--card) !important; }
-"""
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #1e1e2f;
+        color: white;
+    }
+    .stButton>button {
+        border-radius: 10px;
+        font-weight: bold;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-def inject_style(dark_mode: bool):
-    if dark_mode:
-        st.markdown(f"<style>{DARK_STYLE}</style>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<style>{LIGHT_STYLE}</style>", unsafe_allow_html=True)
+st.title("🎓 SmartQuiz AI – Automated Quiz Generator")
 
-# --- Sidebar ---
-with st.sidebar:
-    st.title("SmartQuiz AI")
-    role = st.radio("Mode", ["Student", "Admin"])
-    dark = st.checkbox("Dark mode")
-    inject_style(dark)
-    st.markdown("---")
-    st.markdown("Built with 💡 + Streamlit")
-    st.markdown("")
+# ==========================
+# LOGIN SYSTEM
+# ==========================
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
 
-# --- Admin Login State ---
-if "admin_authenticated" not in st.session_state:
-    st.session_state["admin_authenticated"] = False
+mode = st.sidebar.radio("Choose Mode", ["Student", "Admin"])
 
-# --- Admin Section ---
-if role == "Admin":
-    if not st.session_state["admin_authenticated"]:
-        st.header("Admin Login")
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
+# ==========================
+# ADMIN PANEL
+# ==========================
+if mode == "Admin":
+    if not st.session_state["is_admin"]:
+        st.subheader("🔑 Admin Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
         if st.button("Login"):
-            if u == ADMIN_USER and p == ADMIN_PASS:
-                st.session_state["admin_authenticated"] = True
-                st.success("Logged in as admin")
+            if username == ADMIN_USER and password == ADMIN_PASS:
+                st.session_state["is_admin"] = True
+                st.success("✅ Login successful!")
             else:
-                st.error("Invalid credentials")
+                st.error("❌ Invalid credentials.")
         st.stop()
-    # Admin authenticated UI
-    st.header("Admin Dashboard")
-    tab1, tab2, tab3 = st.tabs(["Upload / Generate", "Manage Quizzes", "Student Results"])
 
-    # --- Upload / Generate ---
-    with tab1:
-        st.subheader("Upload Document (PDF / DOCX / TXT)")
-        uploaded = st.file_uploader("Choose file", type=["pdf", "docx", "txt"])
-        quiz_title = st.text_input("Quiz Title", value="")
-        num_q = st.number_input("Number of questions (if generating)", min_value=3, max_value=30, value=10)
+    st.sidebar.success("Logged in as Admin")
 
-        if uploaded is not None:
-            # read bytes
-            file_bytes = uploaded.read()
-            text = extract_text_from_file(file_bytes, uploaded.name)
-            st.markdown("**Preview of extracted text:**")
-            st.text_area("Text preview", value=text[:2000], height=200)
+    tabs = st.tabs(["📤 Upload Document", "📚 Manage Quizzes", "📊 Student Results"])
 
-            if st.button("Detect & Prepare Quiz"):
-                if detect_mcq(text):
-                    st.info("Detected MCQ-format document. Parsing questions...")
-                    parsed = parse_mcqs(text)
-                    st.session_state["preview_questions"] = parsed
-                    st.success(f"Parsed {len(parsed)} questions (preview).")
+    # --------------------------
+    # TAB 1: UPLOAD DOCUMENT
+    # --------------------------
+    with tabs[0]:
+        st.subheader("📄 Upload New Quiz Document")
+        uploaded_file = st.file_uploader("Choose a document (PDF, DOCX, or TXT)", type=["pdf", "docx", "txt"])
+
+        if uploaded_file:
+            file_bytes = uploaded_file.read()
+            text = extract_text_from_file(file_bytes, uploaded_file.name)
+            if not text.strip():
+                st.error("⚠️ Could not extract text from the file.")
+            else:
+                with st.spinner("Analyzing document..."):
+                    is_mcq = detect_mcq(text)
+                    if is_mcq:
+                        questions = parse_mcqs(text)
+                    else:
+                        questions = generate_mcqs_via_openai(text)
+
+                if not questions:
+                    st.error("❌ No MCQs could be generated or detected.")
                 else:
-                    st.info("Detected paragraph/theory document. Generating MCQs via OpenAI...")
-                    generated = generate_mcqs_via_openai(text, int(num_q))
-                    st.session_state["preview_questions"] = generated
-                    st.success(f"Generated {len(generated)} questions (preview).")
-        # Preview & publish
-        if "preview_questions" in st.session_state:
-            st.subheader("Quiz Preview")
-            for idx, q in enumerate(st.session_state["preview_questions"]):
-                st.write(f"Q{idx+1}. {q.get('question')}")
-                opts = q.get("options") or []
-                for oidx, o in enumerate(opts):
-                    st.write(f"  {chr(65+oidx)}. {o}")
-                st.write(f"  **Answer:** {q.get('correct')}")
-            if st.button("Publish Quiz"):
-                title = quiz_title or f"Quiz-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-                quiz_obj = {
-                    "title": title,
-                    "questions": st.session_state["preview_questions"],
-                    "created_at": datetime.utcnow()
-                }
-                saved = save_quiz_to_db(quiz_obj)
-                st.success(f"Quiz published: {title}")
-                # clear preview
-                del st.session_state["preview_questions"]
+                    st.success(f"✅ {len(questions)} questions ready.")
+                    quiz_title = st.text_input("Enter Quiz Title")
+                    if st.button("Save Quiz"):
+                        if not quiz_title.strip():
+                            st.error("Please enter a quiz title.")
+                        else:
+                            quiz_obj = {
+                                "title": quiz_title.strip(),
+                                "questions": questions,
+                                "created_at": datetime.utcnow().isoformat(),
+                            }
+                            quizzes.append(quiz_obj)
+                            save_local_data(LOCAL_QUIZ_FILE, quizzes)
+                            st.success(f"✅ Quiz '{quiz_title}' saved successfully!")
 
-    # --- Manage Quizzes ---
-    with tab2:
-        st.subheader("Published Quizzes")
-        quizzes = list_quizzes_from_db()
+    # --------------------------
+    # TAB 2: MANAGE QUIZZES
+    # --------------------------
+    with tabs[1]:
+        st.subheader("🗂 Manage Quizzes")
         if not quizzes:
-            st.info("No quizzes found.")
+            st.info("No quizzes uploaded yet.")
         else:
             for q in quizzes:
-                st.write(f"• {q.get('title')}  (id: {q.get('_id')})")
-                cols = st.columns([1,1,1,4])
-                if cols[0].button("View", key=f"view-{q.get('_id')}"):
-                    full = get_quiz_by_id(q.get('_id'))
-                    st.write(full)
-                if cols[1].button("Delete", key=f"del-{q.get('_id')}"):
-                    db = __import__("pymongo").MongoClient(os.getenv("MONGO_URI")).get_default_database()
-                    db.quizzes.delete_one({"_id": __import__("bson").ObjectId(q.get('_id'))})
-                    st.experimental_rerun()
-                if cols[2].button("Export CSV", key=f"exp-{q.get('_id')}"):
-                    full = get_quiz_by_id(q.get('_id'))
-                    # build CSV of questions
-                    rows = []
-                    for i,qq in enumerate(full.get("questions",[])):
-                        rows.append({"quiz_title": full["title"], "q_index": i+1, "question": qq.get("question"), "options": "|".join(qq.get("options",[])), "correct": qq.get("correct")})
-                    buf = BytesIO()
-                    import pandas as pd
-                    pd.DataFrame(rows).to_csv(buf, index=False)
-                    buf.seek(0)
-                    st.download_button("Download CSV", data=buf, file_name=f"{full['title']}_questions.csv")
+                with st.expander(q["title"]):
+                    st.write(f"📅 Created: {q.get('created_at', '')}")
+                    if st.button(f"🗑 Delete '{q['title']}'", key=f"del_{q['title']}"):
+                        quizzes = [x for x in quizzes if x["title"] != q["title"]]
+                        save_local_data(LOCAL_QUIZ_FILE, quizzes)
+                        st.warning(f"Deleted quiz '{q['title']}'")
+                        st.experimental_rerun()
 
-    # --- Student Results ---
-    with tab3:
-        st.subheader("Student Attempts")
-        attempts = list_attempts()
-        if not attempts:
-            st.info("No attempts recorded yet.")
+    # --------------------------
+    # TAB 3: STUDENT RESULTS
+    # --------------------------
+    with tabs[2]:
+        st.subheader("📊 Student Results")
+        results = load_local_data(LOCAL_RESULTS_FILE)
+        if not results:
+            st.info("No results available yet.")
         else:
-            # Show table
-            import pandas as pd
-            rows = []
-            for a in attempts:
-                rows.append({
-                    "Student": a.get("student_name"),
-                    "Email": a.get("student_email"),
-                    "Quiz": a.get("quiz_title"),
-                    "Score": f"{a.get('score')}/{a.get('total')}",
-                    "Date": a.get("timestamp").strftime("%Y-%m-%d %H:%M:%S") if a.get("timestamp") else ""
-                })
-            df = pd.DataFrame(rows)
-            st.dataframe(df)
-            # download excel
-            if st.button("Download all results (Excel)"):
-                buf = export_results_to_excel_bytes(rows, filetype="xlsx")
-                st.download_button("Download .xlsx", data=buf, file_name="smartquiz_results.xlsx")
+            df_data = [
+                {
+                    "Student": r["student_name"],
+                    "Email": r["student_email"],
+                    "Quiz": r["quiz_title"],
+                    "Score": f"{r['score']}/{r['total']}",
+                    "Date": r["timestamp"],
+                }
+                for r in results
+            ]
+            st.dataframe(df_data)
+            excel_bytes = export_results_to_excel_bytes(df_data)
+            st.download_button(
+                "📥 Download Results (Excel)",
+                data=excel_bytes,
+                file_name="student_results.xlsx",
+            )
 
-# --- Student Section ---
-else:
-    st.header("Student Portal")
-    st.subheader("Take a Quiz")
-    quizzes = list_quizzes_from_db()
+# ==========================
+# STUDENT PANEL
+# ==========================
+elif mode == "Student":
+    st.subheader("🧑‍🎓 Attempt Quiz")
     if not quizzes:
-        st.warning("No quizzes available at the moment. Please ask the admin to upload one.")
+        st.info("No quizzes available yet. Please check back later.")
         st.stop()
 
-    # choose quiz
-    quiz_titles = {q["title"]: q["_id"] for q in quizzes}
-    chosen = st.selectbox("Select Quiz", options=list(quiz_titles.keys()))
-    quiz_id = quiz_titles[chosen]
-    # fetch quiz
-    quiz = get_quiz_by_id(quiz_id)
-    if not quiz:
-        st.error("Selected quiz could not be loaded.")
-        st.stop()
+    quiz_titles = [q["title"] for q in quizzes]
+    selected_quiz = st.selectbox("Choose a quiz", quiz_titles)
+    student_name = st.text_input("Your Name")
+    student_email = st.text_input("Your Email")
 
-    # student info
-    student_name = st.text_input("Your name")
-    student_email = st.text_input("Your email")
+    selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
 
-    # quiz questions
-    st.markdown(f"### {quiz.get('title')}")
-    answers = [None] * len(quiz.get("questions", []))
-    for i, q in enumerate(quiz.get("questions", [])):
-        st.write(f"**Q{i+1}. {q.get('question')}**")
-        opts = q.get("options", [])
-        # radio options
-        choice = st.radio(f"Select (Q{i+1})", opts, key=f"q{i}")
-        answers[i] = choice
+    if selected:
+        answers = {}
+        for i, q in enumerate(selected["questions"]):
+            st.markdown(f"**Q{i+1}. {q['question']}**")
+            options = q.get("options", [])
+            ans = st.radio("Choose answer:", options, key=f"q_{i}")
+            answers[q["question"]] = ans
 
-    if st.button("Submit Answers"):
-        # grading (compare selected option text to the correct option label or text)
-        score = 0
-        total = len(quiz.get("questions", []))
-        for i, q in enumerate(quiz.get("questions", [])):
-            sel = answers[i] or ""
-            # If stored correct is label (A/B/C) map to options
-            correct_label = q.get("correct", "").strip().upper()
-            correct_text = None
-            if correct_label in ["A","B","C","D"]:
-                idx = ord(correct_label) - 65
-                try:
-                    correct_text = q.get("options", [])[idx]
-                except Exception:
-                    correct_text = None
-            # compare by text fallback
-            if correct_text:
-                if sel.strip().lower() == correct_text.strip().lower():
-                    score += 1
-            else:
-                # compare to stored correct string
-                if sel.strip().lower() == str(q.get("correct","")).strip().lower():
-                    score += 1
-        # record attempt
-        attempt = record_attempt(quiz_id, quiz.get("title"), student_name, student_email, answers, score, total)
-        # send email
-        try:
-            sent = send_result_email(student_email, student_name, quiz.get("title"), score, total)
-            if sent:
-                st.success(f"Submitted! Your score: {score}/{total}. Email sent.")
-            else:
-                st.warning(f"Submitted! Your score: {score}/{total}. Email could not be sent (check server logs).")
-        except Exception as e:
-            st.success(f"Submitted! Your score: {score}/{total}. Email attempt raised error; check logs.")
-        st.balloons()
-        st.write("Thank you — your attempt has been recorded.")
+        if st.button("Submit Quiz"):
+            correct = 0
+            for q in selected["questions"]:
+                correct_opt = q.get("correct", "A")
+                chosen = answers.get(q["question"], "")
+                if chosen.strip().lower() == q["options"][ord(correct_opt) - 65].strip().lower():
+                    correct += 1
+            score = correct
+            total = len(selected["questions"])
+            percent = round((score / total) * 100, 2)
+
+            st.success(f"🎯 You scored {score}/{total} ({percent}%)")
+
+            attempt = {
+                "student_name": student_name,
+                "student_email": student_email,
+                "quiz_title": selected_quiz,
+                "score": score,
+                "total": total,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            results.append(attempt)
+            save_local_data(LOCAL_RESULTS_FILE, results)
+
+            # Email result
+            send_result_email(student_email, student_name, selected_quiz, score, total)
+            st.info("📧 Result emailed successfully!")
+
