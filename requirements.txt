@@ -1,0 +1,9 @@
+streamlit
+openai
+pdfplumber
+python-docx
+pymongo[srv]
+pandas
+openpyxl
+python-dotenv
+dnspython
