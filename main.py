@@ -13,6 +13,9 @@ from utils import (
     record_attempt,
     list_attempts,
 )
+# debug display line
+st.text_area("Extracted Text (Debug)", text[:1000])
+
 # ==========================
 # CONFIG / SECRETS SECTION
 # ==========================
@@ -37,6 +40,12 @@ else:
 
 # Configure OpenAI API
 openai.api_key = OPENAI_API_KEY
+
+# temporary diagnostic check
+if not OPENAI_API_KEY:
+    st.error("⚠️ OpenAI API key not found in secrets.")
+else:
+    st.success("✅ OpenAI key loaded successfully.")
 
 # ==========================
 # GLOBAL FALLBACK STORAGE (JSON)
