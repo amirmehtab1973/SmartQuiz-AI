@@ -128,6 +128,8 @@ if mode == "Admin":
         if uploaded_file:
             file_bytes = uploaded_file.read()
             text = extract_text_from_file(file_bytes, uploaded_file.name)
+        # debug display line
+            st.text_area("Extracted Text (Debug)", text[:1000])
             if not text.strip():
                 st.error("⚠️ Could not extract text from the file.")
             else:
@@ -155,8 +157,7 @@ if mode == "Admin":
                             quizzes.append(quiz_obj)
                             save_local_data(LOCAL_QUIZ_FILE, quizzes)
                             st.success(f"✅ Quiz '{quiz_title}' saved successfully!")
-    # debug display line
-    st.text_area("Extracted Text (Debug)", text[:1000])
+    
 
     # --------------------------
     # TAB 2: MANAGE QUIZZES
