@@ -13,9 +13,6 @@ from utils import (
     record_attempt,
     list_attempts,
 )
-# debug display line
-st.text_area("Extracted Text (Debug)", text[:1000])
-
 # ==========================
 # CONFIG / SECRETS SECTION
 # ==========================
@@ -158,6 +155,8 @@ if mode == "Admin":
                             quizzes.append(quiz_obj)
                             save_local_data(LOCAL_QUIZ_FILE, quizzes)
                             st.success(f"✅ Quiz '{quiz_title}' saved successfully!")
+    # debug display line
+    st.text_area("Extracted Text (Debug)", text[:1000])
 
     # --------------------------
     # TAB 2: MANAGE QUIZZES
