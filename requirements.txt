@@ -7,3 +7,6 @@ pandas
 openpyxl
 python-dotenv
 dnspython
+pytesseract
+pdf2image
+Pillow
