@@ -21,17 +21,12 @@ MONGODB_URI = os.getenv("MONGODB_URI", "")
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
+
 # ==========================
 # TEXT EXTRACTION
 # ==========================
-try:
-    import pytesseract
-    from PIL import Image
-    import pdf2image
-except ImportError:
-    pytesseract = None
-
 def extract_text_from_file(file_bytes, filename):
+    """Extract text from PDF, DOCX, or TXT files."""
     name = filename.lower()
     text = ""
     try:
@@ -39,11 +34,6 @@ def extract_text_from_file(file_bytes, filename):
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 pages = [p.extract_text() or "" for p in pdf.pages]
                 text = "\n".join(pages)
-            # OCR fallback if text too short
-            if len(text.strip()) < 300 and pytesseract:
-                images = pdf2image.convert_from_bytes(file_bytes)
-                ocr_text = "\n".join(pytesseract.image_to_string(img) for img in images)
-                text += "\n" + ocr_text
         elif name.endswith(".docx"):
             document = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join(p.text for p in document.paragraphs)
@@ -61,7 +51,7 @@ def detect_mcq(text):
     """Detect if document text is already in MCQ format."""
     if not text or len(text.strip()) < 50:
         return False
-    mcq_patterns = [r"Q\s*\d+", r"Question\s*\d+", r"\d+\)", r"\d+\.", r"[A-D][).]", r"Answer\s*[:\-]"]
+    mcq_patterns = [r"Q\s*\d+", r"\d+\.", r"[A-D][).]", r"Answer\s*[:\-]"]
     return any(re.search(p, text, re.IGNORECASE) for p in mcq_patterns)
 
 
@@ -69,119 +59,76 @@ def detect_mcq(text):
 # PARSE EXISTING MCQs
 # ==========================
 def parse_mcqs(text):
-    """Robust MCQ parser that handles PDFs, DOCX, and multiple formats like '1.', '1)', 'Q1.', etc."""
+    """Strict parser tuned for typical exam docs like:
+       1. Question?
+       A) ...
+       B) ...
+       C) ...
+       D) ...
+       Ans: C
+    """
     import re
 
-    # Normalize text
     text = text.replace("\r", "")
-    text = re.sub(r"\*+", "", text)  # remove asterisks
-    text = re.sub(r"\s{2,}", " ", text)  # collapse multiple spaces
+    text = re.sub(r"\*+", "", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     questions = []
-    q_block = []
-
+    q_buffer = []
     for line in lines:
-        # Detect new question start: Q1., 1., 1), i), ii), etc.
-        if re.match(r"^(Q?\s*\d+[\).]|\(?[ivxlcdm]+\))", line, re.IGNORECASE):
-            if q_block:
-                questions.append(" ".join(q_block))
-                q_block = []
-            q_block.append(line)
+        if re.match(r"^(Q?\s*\d+[\).])", line, re.IGNORECASE):
+            if q_buffer:
+                questions.append("\n".join(q_buffer))
+                q_buffer = []
+            q_buffer.append(line)
         else:
-            q_block.append(line)
-
-    if q_block:
-        questions.append(" ".join(q_block))
+            q_buffer.append(line)
+    if q_buffer:
+        questions.append("\n".join(q_buffer))
 
     parsed = []
     for qb in questions:
-        # Extract question text
-        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
+        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*)", qb, re.IGNORECASE)
         q_text = q_match.group(1).strip() if q_match else qb
 
-        # Extract options — works for A), A., A:
-        opts = re.findall(r"([A-Da-d][).:\-]\s*[^A-Da-d]+)", qb)
-        clean_opts = []
-        for o in opts:
-            o = re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip()
-            clean_opts.append(o)
-        clean_opts = clean_opts[:4]
+        opts = []
+        for opt_label in ["A", "B", "C", "D"]:
+            pat = rf"{opt_label}[\).:\-]\s*(.*?)(?=(?:[A-D][\).:\-]|Ans|Answer|$))"
+            m = re.search(pat, qb, re.IGNORECASE | re.DOTALL)
+            if m:
+                opt_text = re.sub(r"\s+", " ", m.group(1).strip())
+                opts.append(opt_text)
+        while len(opts) < 4:
+            opts.append("N/A")
 
-        # Detect answer pattern
         ans_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])", qb, re.IGNORECASE)
-        correct = ans_match.group(1).upper() if ans_match else None
-
-        # Fallback: if no A/B/C/D found but text like "Answer is Artificial Intelligence"
-        if not correct:
-            alt = re.search(r"(?:Answer|Ans)\s*(?:is|=)?\s*(.*)", qb, re.IGNORECASE)
-            if alt:
-                possible_ans_text = alt.group(1).strip()
-                for i, opt in enumerate(clean_opts):
-                    if possible_ans_text.lower() in opt.lower():
-                        correct = chr(65 + i)
-                        break
-
-        # Final fallback
-        if not correct:
-            correct = "A"
-
-        # Ensure exactly 4 options
-        while len(clean_opts) < 4:
-            clean_opts.append("N/A")
+        correct = ans_match.group(1).upper() if ans_match else "A"
 
         parsed.append({
             "question": q_text,
-            "options": clean_opts[:4],
-            "correct": correct
+            "options": opts[:4],
+            "correct": correct,
+            "correct_index": ord(correct) - 65
         })
 
+    parsed = [q for q in parsed if len(q["question"]) > 5 and any(o != "N/A" for o in q["options"])]
     return parsed
-
-
-
-def _finalize_mcq(q, options, answer_raw):
-    """Cleans and formats MCQ block."""
-    options = [re.sub(r'\s+', ' ', o).strip() for o in options]
-    while len(options) < 4:
-        options.append("N/A")
-
-    correct_letter = "A"
-    correct_index = 0
-    if answer_raw:
-        m = re.search(r'([A-Da-d])', answer_raw)
-        if m:
-            correct_letter = m.group(1).upper()
-            correct_index = ord(correct_letter) - 65
-        else:
-            for i, opt in enumerate(options):
-                if answer_raw.lower() in opt.lower() or opt.lower() in answer_raw.lower():
-                    correct_index = i
-                    correct_letter = chr(65 + i)
-                    break
-    correct_index = max(0, min(correct_index, 3))
-    return {
-        "question": q.strip(),
-        "options": options[:4],
-        "correct": correct_letter,
-        "correct_index": correct_index
-    }
 
 
 # ==========================
 # GENERATE MCQs USING OPENAI
 # ==========================
 def generate_mcqs_via_openai(text, n_questions=8):
-    """Uses OpenAI API to generate MCQs from text."""
+    """Generate MCQs from text using OpenAI API."""
     if not OPENAI_API_KEY:
         print("⚠️ No OpenAI API key found.")
         return []
 
     prompt = f"""
     You are an AI quiz generator.
-    Create {n_questions} multiple-choice questions based on the following content.
-    Each question should have 4 options (A, B, C, D) and the correct answer.
-    Return JSON in this exact format:
+    Create {n_questions} multiple-choice questions from the text below.
+    Each must have 4 options (A,B,C,D) and one correct answer.
+    Return valid JSON only in this exact format:
     [
       {{
         "question": "...",
@@ -197,35 +144,23 @@ def generate_mcqs_via_openai(text, n_questions=8):
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1200,
+            max_tokens=1500,
             temperature=0.5,
         )
         content = response.choices[0].message.content
         start = content.find("[")
         if start != -1:
             content = content[start:]
-
         questions = json.loads(content)
-        normalized = []
+
         for q in questions:
-            opts = [re.sub(r'\s+', ' ', (o or "")).strip() for o in q.get("options", [])]
-            while len(opts) < 4:
-                opts.append("N/A")
-            corr = q.get("correct", "A")
-            m = re.search(r'([A-Da-d])', str(corr))
-            if m:
-                corr_letter = m.group(1).upper()
-                idx = ord(corr_letter) - 65
-            else:
-                corr_letter = "A"
-                idx = 0
-            normalized.append({
-                "question": q.get("question", "").strip(),
-                "options": opts[:4],
-                "correct": corr_letter,
-                "correct_index": idx
-            })
-        return normalized
+            if "options" not in q or len(q["options"]) < 4:
+                q["options"] = (q.get("options") or ["A", "B", "C", "D"])[:4]
+            correct = q.get("correct", "A").strip().upper() or "A"
+            q["correct"] = correct
+            q["correct_index"] = ord(correct) - 65
+
+        return questions
 
     except Exception as e:
         print(f"[ERROR] generate_mcqs_via_openai: {e}")
@@ -265,7 +200,7 @@ def send_result_email(to_email, student_name, quiz_title, score, total):
 
 
 # ==========================
-# RECORD ATTEMPT
+# RECORD ATTEMPT / RESULTS
 # ==========================
 LOCAL_RESULTS_FILE = "results.json"
 
