@@ -210,49 +210,47 @@ if mode == "Admin":
 # ==========================
 # STUDENT PANEL
 # ==========================
-elif mode == "Student":
-    st.subheader("🧑‍🎓 Attempt Quiz")
-    if not quizzes:
-        st.info("No quizzes available yet. Please check back later.")
-        st.stop()
+import json
+import re
 
-    quiz_titles = [q["title"] for q in quizzes]
-    selected_quiz = st.selectbox("Choose a quiz", quiz_titles)
-    student_name = st.text_input("Your Name")
-    student_email = st.text_input("Your Email")
+# --- Student Panel ---
+st.header("🎓 Student Quiz Panel")
 
+quiz_titles = [q["title"] for q in quizzes] if quizzes else []
+if not quiz_titles:
+    st.warning("No quizzes available yet. Please ask admin to upload one.")
+else:
+    selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
     selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
 
-if selected:
-    # Load selected quiz file
-    quiz_path = f"quizzes/{selected}.json"
-    if os.path.exists(quiz_path):
-        with open(quiz_path, "r", encoding="utf-8") as f:
-            mcqs = json.load(f)
-    else:
-        st.error("Quiz file not found.")
-        mcqs = []
+    if selected:
+        # Load selected quiz file safely
+        quiz_path = f"quizzes/{selected['title']}.json"
+        if os.path.exists(quiz_path):
+            with open(quiz_path, "r", encoding="utf-8") as f:
+                mcqs = json.load(f)
+        else:
+            st.error("Quiz file not found.")
+            mcqs = []
 
-    answers = {}
-    for i, q in enumerate(mcqs):
-        st.subheader(f"Q{i+1}. {q['question']}")
-        clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
-        choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
-        answers[q["question"]] = choice
-        st.write("")  # spacing
+        st.subheader(f"📘 Quiz: {selected['title']}")
+        student_name = st.text_input("Your Name")
+        student_email = st.text_input("Your Email")
 
-        if st.button("Submit Quiz"):
-            correct = 0
-            for q in selected["questions"]:
-                correct_opt = q.get("correct", "A")
-                chosen = answers.get(q["question"], "")
-                if chosen.strip().lower() == q["options"][ord(correct_opt) - 65].strip().lower():
-                    correct += 1
-            score = correct
-            total = len(selected["questions"])
-            percent = round((score / total) * 100, 2)
+        if student_name and student_email:
+            answers = {}
+            for i, q in enumerate(mcqs):
+                st.subheader(f"Q{i+1}. {q['question']}")
+                clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
+                choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
+                answers[q["question"]] = choice
+                st.write("")
 
-            st.success(f"🎯 You scored {score}/{total} ({percent}%)")
+            if st.button("Submit Quiz"):
+                score = sum(
+                    1 for q in mcqs if answers.get(q["question"]) == q["options"][ord(q["correct"]) - 65]
+                )
+                st.success(f"✅ You scored {score} out of {len(mcqs)}")
 
             attempt = {
                 "student_name": student_name,
