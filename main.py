@@ -128,6 +128,9 @@ if mode == "Admin":
         if uploaded_file:
             file_bytes = uploaded_file.read()
             text = extract_text_from_file(file_bytes, uploaded_file.name)
+            st.write(f"Characters extracted: {len(text)}")
+            st.text_area("Extracted Text (Debug – full)", text, height=400)
+
         # debug display line
             st.text_area("Extracted Text (Debug)", text[:1000])
             if not text.strip():
