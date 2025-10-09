@@ -127,19 +127,23 @@ def generate_mcqs_via_openai(text, n_questions=8):
             temperature=0.5,
         )
         content = response.choices[0].message.content
+
+        # Debug print to check what OpenAI returned
+        print("DEBUG: OpenAI response content:")
+        print(content)
+
         start = content.find("[")
         if start != -1:
             content = content[start:]
+
         questions = json.loads(content)
         for q in questions:
             if "options" not in q or len(q["options"]) < 4:
                 q["options"] = q.get("options", ["A", "B", "C", "D"])[:4]
         return questions
+
     except Exception as e:
         print(f"[ERROR] generate_mcqs_via_openai: {e}")
-# Plz delete after debug
-print("DEBUG: OpenAI response content:")
-print(response.choices[0].message.content)
         return []
 
 
