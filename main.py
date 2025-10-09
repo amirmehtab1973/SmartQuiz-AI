@@ -133,7 +133,7 @@ if mode == "Admin":
             st.text_area("Extracted Text (Debug – full)", text, height=400)
 
         # debug display line
-            st.text_area("Extracted Text (Debug)", text[:1000])
+            st.text_area("Parsed MCQs (Debug)", "\n\n".join([q["question"] for q in mcqs]))
             if not text.strip():
                 st.error("⚠️ Could not extract text from the file.")
             else:
@@ -223,15 +223,23 @@ elif mode == "Student":
 
     selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
 
-    if selected:
-        answers = {}
-        for i, q in enumerate(mcqs):
-            st.subheader(f"Q{i+1}. {q['question']}")
-            # Clean options: remove stray newlines or extra spaces
-            clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
-            choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
-            st.write("")  # small spacing
+if selected:
+    # Load selected quiz file
+    quiz_path = f"quizzes/{selected}.json"
+    if os.path.exists(quiz_path):
+        with open(quiz_path, "r", encoding="utf-8") as f:
+            mcqs = json.load(f)
+    else:
+        st.error("Quiz file not found.")
+        mcqs = []
 
+    answers = {}
+    for i, q in enumerate(mcqs):
+        st.subheader(f"Q{i+1}. {q['question']}")
+        clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
+        choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
+        answers[q["question"]] = choice
+        st.write("")  # spacing
 
         if st.button("Submit Quiz"):
             correct = 0
