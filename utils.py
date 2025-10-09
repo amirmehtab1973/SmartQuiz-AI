@@ -70,45 +70,56 @@ def detect_mcq(text):
 # PARSE EXISTING MCQs
 # ==========================
 def parse_mcqs(text):
-    """Ultra-flexible parser: handles *1., normal sentences, and interleaved text."""
-    text = re.sub(r'\r', '', text)
-    text = re.sub(r'\*+', '', text)  # remove asterisks
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    """Bulletproof MCQ parser that handles DOCX, PDF, asterisks, and mixed lines."""
+    import re
 
-    blocks = []
-    current = []
+    # Normalise text
+    text = text.replace("\r", "")
+    text = re.sub(r"\*+", "", text)        # remove asterisks
+    text = re.sub(r"\s{2,}", " ", text)    # collapse spaces
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+    questions = []
+    q_block = []
     for line in lines:
-        # A new question starts if line begins with 1., *1., Q1., etc.
-        if re.match(r"^(?:\*?\s*)?(?:Q?\s*\d+[\).])", line, re.IGNORECASE):
-            if current:
-                blocks.append(" ".join(current))
-                current = []
-            current.append(line)
+        # Question start: 1., Q1., *1., etc.
+        if re.match(r"^(?:Q?\s*\d+[\).])", line, re.IGNORECASE):
+            if q_block:
+                questions.append(" ".join(q_block))
+                q_block = []
+            q_block.append(line)
+        # Continuation of current question/options
         else:
-            current.append(line)
-    if current:
-        blocks.append(" ".join(current))
+            q_block.append(line)
+    if q_block:
+        questions.append(" ".join(q_block))
 
     parsed = []
-    for block in blocks:
-        # Extract question
-        q_match = re.match(r"^(?:\*?\s*)?(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
-        question_text = q_match.group(1).strip() if q_match else block
+    for qb in questions:
+        # Extract the question text up to the first A)/a)
+        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
+        q_text = q_match.group(1).strip() if q_match else qb
 
-        # Extract options
-        opts = re.findall(r"[A-Da-d][).:\-]\s*([^A-Da-d]+?)(?=\s+[A-Da-d][).:\-]|$)", block)
-        opts = [o.strip() for o in opts if o.strip()]
+        # Find all options even if they're inline or spaced oddly
+        opts = re.findall(r"([A-Da-d][).:\-]\s*[^A-Da-d]+)", qb)
+        clean_opts = []
+        for o in opts:
+            # Remove A)/B) label
+            o = re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip()
+            clean_opts.append(o)
+        # Trim to max 4 options
+        clean_opts = clean_opts[:4]
 
         # Detect correct answer
-        ans_match = re.search(r"(?:Answer|Ans)\s*[:\-]?\s*([A-Da-d])", block, re.IGNORECASE)
-        correct = ans_match.group(1).upper() if ans_match else "A"
+        ans = re.search(r"(?:Answer|Ans)\s*[:\-]?\s*([A-Da-d])", qb, re.IGNORECASE)
+        correct = ans.group(1).upper() if ans else "A"
 
-        if len(opts) >= 2:
-            while len(opts) < 4:
-                opts.append("N/A")
+        if clean_opts:
+            while len(clean_opts) < 4:
+                clean_opts.append("N/A")
             parsed.append({
-                "question": question_text,
-                "options": opts[:4],
+                "question": q_text,
+                "options": clean_opts,
                 "correct": correct
             })
 
