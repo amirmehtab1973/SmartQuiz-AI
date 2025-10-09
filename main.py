@@ -142,16 +142,17 @@ mode = st.sidebar.radio("Choose Mode", ["Student", "Admin"])
 # ==========================
 if mode == "Admin":
     if not st.session_state["is_admin"]:
-    st.subheader("🔑 Admin Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if username == ADMIN_USER and password == ADMIN_PASS:
-            st.session_state["is_admin"] = True
-            st.rerun()
-        else:
-            st.error("❌ Invalid credentials.")
-    st.stop()
+        st.subheader("🔑 Admin Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if username == ADMIN_USER and password == ADMIN_PASS:
+                st.session_state["is_admin"] = True
+                st.rerun()
+            else:
+                st.error("❌ Invalid credentials.")
+        st.stop()
+
 
 
     # Admin logged in
