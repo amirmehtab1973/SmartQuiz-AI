@@ -32,7 +32,6 @@ except ImportError:
     pytesseract = None
 
 def extract_text_from_file(file_bytes, filename):
-    """Extract text from PDF, DOCX, or TXT file; fallback to OCR if PDF has few characters."""
     name = filename.lower()
     text = ""
     try:
@@ -62,76 +61,82 @@ def detect_mcq(text):
     """Detect if document text is already in MCQ format."""
     if not text or len(text.strip()) < 50:
         return False
-    mcq_patterns = [r"Q\s*\d+", r"Question\s*\d+", r"[A-D][).]", r"Answer\s*[:\-]", r"^\d+\."]
-    return any(re.search(p, text, re.IGNORECASE | re.MULTILINE) for p in mcq_patterns)
+    mcq_patterns = [r"Q\s*\d+", r"Question\s*\d+", r"\d+\)", r"\d+\.", r"[A-D][).]", r"Answer\s*[:\-]"]
+    return any(re.search(p, text, re.IGNORECASE) for p in mcq_patterns)
 
 
 # ==========================
 # PARSE EXISTING MCQs
 # ==========================
 def parse_mcqs(text):
-    """Parses text to extract MCQ questions, options, and answers reliably."""
-    # Normalize text and remove markdown-style asterisks
-    text = text.replace("\r", "\n").replace("**", "").replace("*", "")
+    """Parses text to extract MCQs in multiple numbering formats."""
+    text = text.replace("\r", "\n")
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     mcqs = []
     q = None
     options = []
-    correct = None
+    answer_raw = None
 
-    # regex patterns
-    question_pattern = re.compile(r"^(?:Q\s*\d+\.?|Question\s*\d+\.?|\d+\.\s*)(.*)", re.IGNORECASE)
+    question_pattern = re.compile(r"^(?:Q?\s*\d+[\).]|[ivx]+\)|[ivx]+\.)\s*(.*)", re.IGNORECASE)
     option_pattern = re.compile(r"^[A-Da-d][\).:\-]?\s*(.*)")
-    answer_pattern = re.compile(r"^(?:Ans|Answer|Key)[:\-]?\s*([A-Da-d])", re.IGNORECASE)
+    answer_pattern = re.compile(r"^(?:Ans|Answer|Key)[:\-]?\s*(.*)", re.IGNORECASE)
 
     for line in lines:
-        q_match = question_pattern.match(line)
-        opt_match = option_pattern.match(line)
-        ans_match = answer_pattern.match(line)
+        qm = question_pattern.match(line)
+        om = option_pattern.match(line)
+        am = answer_pattern.match(line)
 
-        # New question found
-        if q_match:
+        if qm:
             if q and options:
-                while len(options) < 4:
-                    options.append("N/A")
-                mcqs.append({
-                    "question": q.strip(),
-                    "options": options[:4],
-                    "correct": (correct or "A").upper()
-                })
-            q = q_match.group(1).strip()
+                mcqs.append(_finalize_mcq(q, options, answer_raw))
+            q = qm.group(1).strip()
             options = []
-            correct = None
-
-        elif opt_match:
-            opt_text = opt_match.group(1).strip()
-            # Merge short broken lines from PDFs
-            if len(opt_text.split()) < 2:
-                opt_text = opt_text.replace("\n", " ")
-            options.append(opt_text)
-
-        elif ans_match:
-            correct = ans_match.group(1).upper()
-
+            answer_raw = None
+        elif om:
+            options.append(om.group(1).strip())
+        elif am:
+            answer_raw = am.group(1).strip()
         else:
-            # Continuation lines (append to last option or question)
-            if q and not options:
-                q += " " + line.strip()
-            elif options:
-                options[-1] += " " + line.strip()
+            if options:
+                options[-1] = (options[-1] + " " + line.strip()).strip()
+            elif q:
+                q = (q + " " + line.strip()).strip()
 
-    # Append the final question
     if q and options:
-        while len(options) < 4:
-            options.append("N/A")
-        mcqs.append({
-            "question": q.strip(),
-            "options": options[:4],
-            "correct": (correct or "A").upper()
-        })
+        mcqs.append(_finalize_mcq(q, options, answer_raw))
 
     return mcqs
+
+
+def _finalize_mcq(q, options, answer_raw):
+    """Cleans and formats MCQ block."""
+    options = [re.sub(r'\s+', ' ', o).strip() for o in options]
+    while len(options) < 4:
+        options.append("N/A")
+
+    correct_letter = "A"
+    correct_index = 0
+    if answer_raw:
+        m = re.search(r'([A-Da-d])', answer_raw)
+        if m:
+            correct_letter = m.group(1).upper()
+            correct_index = ord(correct_letter) - 65
+        else:
+            for i, opt in enumerate(options):
+                if answer_raw.lower() in opt.lower() or opt.lower() in answer_raw.lower():
+                    correct_index = i
+                    correct_letter = chr(65 + i)
+                    break
+    correct_index = max(0, min(correct_index, 3))
+    return {
+        "question": q.strip(),
+        "options": options[:4],
+        "correct": correct_letter,
+        "correct_index": correct_index
+    }
 
 
 # ==========================
@@ -167,18 +172,31 @@ def generate_mcqs_via_openai(text, n_questions=8):
             temperature=0.5,
         )
         content = response.choices[0].message.content
-        print("DEBUG: OpenAI response content:")
-        print(content)
-
         start = content.find("[")
         if start != -1:
             content = content[start:]
 
         questions = json.loads(content)
+        normalized = []
         for q in questions:
-            if "options" not in q or len(q["options"]) < 4:
-                q["options"] = q.get("options", ["A", "B", "C", "D"])[:4]
-        return questions
+            opts = [re.sub(r'\s+', ' ', (o or "")).strip() for o in q.get("options", [])]
+            while len(opts) < 4:
+                opts.append("N/A")
+            corr = q.get("correct", "A")
+            m = re.search(r'([A-Da-d])', str(corr))
+            if m:
+                corr_letter = m.group(1).upper()
+                idx = ord(corr_letter) - 65
+            else:
+                corr_letter = "A"
+                idx = 0
+            normalized.append({
+                "question": q.get("question", "").strip(),
+                "options": opts[:4],
+                "correct": corr_letter,
+                "correct_index": idx
+            })
+        return normalized
 
     except Exception as e:
         print(f"[ERROR] generate_mcqs_via_openai: {e}")
@@ -189,7 +207,6 @@ def generate_mcqs_via_openai(text, n_questions=8):
 # SEND EMAIL RESULTS
 # ==========================
 def send_result_email(to_email, student_name, quiz_title, score, total):
-    """Sends quiz results to student via Gmail SMTP."""
     if not EMAIL_USER or not EMAIL_PASS:
         print("⚠️ Email credentials missing.")
         return False
@@ -219,12 +236,11 @@ def send_result_email(to_email, student_name, quiz_title, score, total):
 
 
 # ==========================
-# RECORD ATTEMPT (LOCAL JSON FALLBACK)
+# RECORD ATTEMPT
 # ==========================
 LOCAL_RESULTS_FILE = "results.json"
 
 def record_attempt(quiz_id, quiz_title, student_name, student_email, answers, score, total):
-    """Saves student attempt locally (JSON fallback)."""
     attempt = {
         "quiz_id": quiz_id,
         "quiz_title": quiz_title,
@@ -250,7 +266,6 @@ def record_attempt(quiz_id, quiz_title, student_name, student_email, answers, sc
 
 
 def list_attempts():
-    """Returns list of saved attempts."""
     if not os.path.exists(LOCAL_RESULTS_FILE):
         return []
     try:
@@ -264,7 +279,6 @@ def list_attempts():
 # EXPORT TO EXCEL
 # ==========================
 def export_results_to_excel_bytes(data):
-    """Exports student results to an Excel file (bytes)."""
     try:
         df = pd.DataFrame(data)
         buf = io.BytesIO()
