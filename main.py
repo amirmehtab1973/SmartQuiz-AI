@@ -2,6 +2,7 @@ import os
 import json
 import streamlit as st
 import openai
+import re
 from datetime import datetime
 from utils import (
     extract_text_from_file,
@@ -224,11 +225,13 @@ elif mode == "Student":
 
     if selected:
         answers = {}
-        for i, q in enumerate(selected["questions"]):
-            st.markdown(f"**Q{i+1}. {q['question']}**")
-            options = q.get("options", [])
-            ans = st.radio("Choose answer:", options, key=f"q_{i}")
-            answers[q["question"]] = ans
+        for i, q in enumerate(mcqs):
+            st.subheader(f"Q{i+1}. {q['question']}")
+            # Clean options: remove stray newlines or extra spaces
+            clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
+            choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
+            st.write("")  # small spacing
+
 
         if st.button("Submit Quiz"):
             correct = 0
