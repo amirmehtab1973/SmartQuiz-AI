@@ -24,8 +24,14 @@ if OPENAI_API_KEY:
 # ==========================
 # TEXT EXTRACTION
 # ==========================
+try:
+    import pytesseract
+    from PIL import Image
+    import pdf2image
+except ImportError:
+    pytesseract = None
+
 def extract_text_from_file(file_bytes, filename):
-    """Extracts text from PDF, DOCX, or TXT files."""
     name = filename.lower()
     text = ""
     try:
@@ -33,14 +39,20 @@ def extract_text_from_file(file_bytes, filename):
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 pages = [p.extract_text() or "" for p in pdf.pages]
                 text = "\n".join(pages)
+            # OCR fallback if text too short
+            if len(text.strip()) < 300 and pytesseract:
+                images = pdf2image.convert_from_bytes(file_bytes)
+                ocr_text = "\n".join(pytesseract.image_to_string(img) for img in images)
+                text += "\n" + ocr_text
         elif name.endswith(".docx"):
             document = docx.Document(io.BytesIO(file_bytes))
-            text = "\n".join([p.text for p in document.paragraphs])
+            text = "\n".join(p.text for p in document.paragraphs)
         else:
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
         print(f"[ERROR] extract_text_from_file: {e}")
     return text
+
 
 
 # ==========================
