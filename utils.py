@@ -32,6 +32,7 @@ except ImportError:
     pytesseract = None
 
 def extract_text_from_file(file_bytes, filename):
+    """Extract text from PDF, DOCX, or TXT file; fallback to OCR if PDF has few characters."""
     name = filename.lower()
     text = ""
     try:
@@ -54,7 +55,6 @@ def extract_text_from_file(file_bytes, filename):
     return text
 
 
-
 # ==========================
 # DETECT MCQ FORMAT
 # ==========================
@@ -62,68 +62,76 @@ def detect_mcq(text):
     """Detect if document text is already in MCQ format."""
     if not text or len(text.strip()) < 50:
         return False
-    mcq_patterns = [r"Q\s*\d+", r"Question\s*\d+", r"[A-D][).]", r"Answer\s*[:\-]"]
-    return any(re.search(p, text, re.IGNORECASE) for p in mcq_patterns)
+    mcq_patterns = [r"Q\s*\d+", r"Question\s*\d+", r"[A-D][).]", r"Answer\s*[:\-]", r"^\d+\."]
+    return any(re.search(p, text, re.IGNORECASE | re.MULTILINE) for p in mcq_patterns)
 
 
 # ==========================
 # PARSE EXISTING MCQs
 # ==========================
 def parse_mcqs(text):
-    """Bulletproof MCQ parser that handles DOCX, PDF, asterisks, and mixed lines."""
-    import re
-
-    # Normalise text
-    text = text.replace("\r", "")
-    text = re.sub(r"\*+", "", text)        # remove asterisks
-    text = re.sub(r"\s{2,}", " ", text)    # collapse spaces
+    """Parses text to extract MCQ questions, options, and answers reliably."""
+    # Normalize text and remove markdown-style asterisks
+    text = text.replace("\r", "\n").replace("**", "").replace("*", "")
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    questions = []
-    q_block = []
+    mcqs = []
+    q = None
+    options = []
+    correct = None
+
+    # regex patterns
+    question_pattern = re.compile(r"^(?:Q\s*\d+\.?|Question\s*\d+\.?|\d+\.\s*)(.*)", re.IGNORECASE)
+    option_pattern = re.compile(r"^[A-Da-d][\).:\-]?\s*(.*)")
+    answer_pattern = re.compile(r"^(?:Ans|Answer|Key)[:\-]?\s*([A-Da-d])", re.IGNORECASE)
+
     for line in lines:
-        # Question start: 1., Q1., *1., etc.
-        if re.match(r"^(?:Q?\s*\d+[\).])", line, re.IGNORECASE):
-            if q_block:
-                questions.append(" ".join(q_block))
-                q_block = []
-            q_block.append(line)
-        # Continuation of current question/options
+        q_match = question_pattern.match(line)
+        opt_match = option_pattern.match(line)
+        ans_match = answer_pattern.match(line)
+
+        # New question found
+        if q_match:
+            if q and options:
+                while len(options) < 4:
+                    options.append("N/A")
+                mcqs.append({
+                    "question": q.strip(),
+                    "options": options[:4],
+                    "correct": (correct or "A").upper()
+                })
+            q = q_match.group(1).strip()
+            options = []
+            correct = None
+
+        elif opt_match:
+            opt_text = opt_match.group(1).strip()
+            # Merge short broken lines from PDFs
+            if len(opt_text.split()) < 2:
+                opt_text = opt_text.replace("\n", " ")
+            options.append(opt_text)
+
+        elif ans_match:
+            correct = ans_match.group(1).upper()
+
         else:
-            q_block.append(line)
-    if q_block:
-        questions.append(" ".join(q_block))
+            # Continuation lines (append to last option or question)
+            if q and not options:
+                q += " " + line.strip()
+            elif options:
+                options[-1] += " " + line.strip()
 
-    parsed = []
-    for qb in questions:
-        # Extract the question text up to the first A)/a)
-        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
-        q_text = q_match.group(1).strip() if q_match else qb
+    # Append the final question
+    if q and options:
+        while len(options) < 4:
+            options.append("N/A")
+        mcqs.append({
+            "question": q.strip(),
+            "options": options[:4],
+            "correct": (correct or "A").upper()
+        })
 
-        # Find all options even if they're inline or spaced oddly
-        opts = re.findall(r"([A-Da-d][).:\-]\s*[^A-Da-d]+)", qb)
-        clean_opts = []
-        for o in opts:
-            # Remove A)/B) label
-            o = re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip()
-            clean_opts.append(o)
-        # Trim to max 4 options
-        clean_opts = clean_opts[:4]
-
-        # Detect correct answer
-        ans = re.search(r"(?:Answer|Ans)\s*[:\-]?\s*([A-Da-d])", qb, re.IGNORECASE)
-        correct = ans.group(1).upper() if ans else "A"
-
-        if clean_opts:
-            while len(clean_opts) < 4:
-                clean_opts.append("N/A")
-            parsed.append({
-                "question": q_text,
-                "options": clean_opts,
-                "correct": correct
-            })
-
-    return parsed
+    return mcqs
 
 
 # ==========================
@@ -159,8 +167,6 @@ def generate_mcqs_via_openai(text, n_questions=8):
             temperature=0.5,
         )
         content = response.choices[0].message.content
-
-        # Debug print to check what OpenAI returned
         print("DEBUG: OpenAI response content:")
         print(content)
 
