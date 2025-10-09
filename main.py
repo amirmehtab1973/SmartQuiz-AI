@@ -202,105 +202,57 @@ if mode == "Admin":
 # ==========================
 # STUDENT PANEL (REPLACE THIS BLOCK)
 # ==========================
-elif mode == "Student":
-    st.header("🎓 Student Quiz Panel")
+# ==========================
+# STUDENT PANEL
+# ==========================
+st.header("🎓 Student Quiz Panel")
 
-    quiz_titles = [q["title"] for q in quizzes] if quizzes else []
-    if not quiz_titles:
-        st.warning("No quizzes available yet. Please ask admin to upload one.")
-    else:
-        selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
-        selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
+quiz_titles = [q["title"] for q in quizzes] if quizzes else []
+if not quiz_titles:
+    st.warning("No quizzes available yet. Please ask admin to upload one.")
+else:
+    selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
+    selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
 
-        if selected:
-            mcqs = selected.get("questions", [])
-            st.subheader(f"📘 Quiz: {selected['title']}")
+    if selected:
+        mcqs = selected.get("questions", [])
+        st.subheader(f"📘 Quiz: {selected['title']}")
 
-            student_name = st.text_input("Your Name")
-            student_email = st.text_input("Your Email")
+        student_name = st.text_input("Your Name")
+        student_email = st.text_input("Your Email")
 
-            if student_name and student_email:
-                # store per-question selected info: {index: {"label":"A","text":"..."}}
-                selected_answers = {}
+        if student_name and student_email and mcqs:
+            selected_answers = {}
 
+            for i, q in enumerate(mcqs):
+                st.markdown(f"**Q{i+1}. {q['question']}**")
+                opts = q.get("options", [])
+                labeled_options = [f"{chr(65+j)}) {opt}" for j, opt in enumerate(opts)]
+                choice = st.radio("Choose answer:", labeled_options, key=f"q_{i}")
+                sel_label = choice.split(")")[0].strip() if ")" in choice else ""
+                sel_index = ord(sel_label) - 65 if sel_label else None
+                selected_answers[i] = sel_index
+                st.write("")
+
+            if st.button("Submit Quiz"):
+                score = 0
                 for i, q in enumerate(mcqs):
-                    # Question text
-                    st.markdown(f"**Q{i+1}. {q.get('question','').strip()}**")
+                    if selected_answers.get(i) == q.get("correct_index"):
+                        score += 1
 
-                    # Normalize option texts (remove stray newlines/extra spaces)
-                    raw_options = q.get("options", [])
-                    opt_texts = [re.sub(r'\s+', ' ', (opt or "")).strip() for opt in raw_options]
+                total = len(mcqs)
+                st.success(f"✅ You scored {score} out of {total}")
 
-                    # Build labeled options "A) text", "B) text", ...
-                    labeled_options = []
-                    for j, opt_text in enumerate(opt_texts):
-                        label = chr(65 + j)  # 'A', 'B', ...
-                        labeled_options.append(f"{label}) {opt_text}")
+                attempt = {
+                    "student_name": student_name,
+                    "student_email": student_email,
+                    "quiz_title": selected_quiz,
+                    "score": score,
+                    "total": total,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                results.append(attempt)
+                save_local_data(LOCAL_RESULTS_FILE, results)
 
-                    # Ensure there are 4 options (fill N/A if necessary)
-                    while len(labeled_options) < 4:
-                        idx = len(labeled_options)
-                        labeled_options.append(f"{chr(65 + idx)}) N/A")
-                        opt_texts.append("N/A")
-
-                    # Display radio with the labeled options
-                    choice = st.radio("", labeled_options, key=f"q_{i}")
-
-                    # Extract the label and index from the selected choice (e.g. "A) Foo")
-                    sel_label = choice.split(")")[0].strip() if isinstance(choice, str) and ")" in choice else ""
-                    sel_index = ord(sel_label) - 65 if sel_label else None
-                    sel_text = None
-                    if sel_index is not None and 0 <= sel_index < len(opt_texts):
-                        sel_text = opt_texts[sel_index]
-
-                    selected_answers[i] = {"label": sel_label, "text": sel_text}
-
-                    st.write("")  # small spacing
-
-                if st.button("Submit Quiz"):
-                    # Score by comparing the selected label (A/B/...) with stored q['correct']
-                    score = 0
-                    for i, q in enumerate(mcqs):
-                        correct_label = (q.get("correct") or "A").upper()
-                        sel = selected_answers.get(i, {})
-                        if sel.get("label") == correct_label:
-                            score += 1
-
-                    total = len(mcqs)
-                    percent = round((score / total) * 100, 2) if total else 0
-                    st.success(f"✅ You scored {score}/{total} ({percent}%)")
-
-                    # Prepare attempt record (including per-question labels & texts)
-                    answers_for_record = []
-                    for i, q in enumerate(mcqs):
-                        sel = selected_answers.get(i, {"label": "", "text": ""})
-                        answers_for_record.append({
-                            "question": q.get("question"),
-                            "selected_label": sel.get("label"),
-                            "selected_text": sel.get("text"),
-                            "correct_label": (q.get("correct") or "A").upper(),
-                            "correct_text": q.get("options")[ord((q.get('correct') or 'A').upper()) - 65] if q.get("options") else ""
-                        })
-
-                    attempt = {
-                        "student_name": student_name,
-                        "student_email": student_email,
-                        "quiz_title": selected_quiz,
-                        "score": score,
-                        "total": total,
-                        "percent": percent,
-                        "answers": answers_for_record,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    }
-
-                    # Save locally (results list)
-                    results.append(attempt)
-                    save_local_data(LOCAL_RESULTS_FILE, results)
-
-                    # Send result email (if configured)
-                    try:
-                        send_result_email(student_email, student_name, selected_quiz, score, total)
-                        st.info("📧 Result emailed successfully!")
-                    except Exception as e:
-                        st.warning("Email send failed (check EMAIL settings).")
-
+                send_result_email(student_email, student_name, selected_quiz, score, total)
+                st.info("📧 Result emailed successfully!")
