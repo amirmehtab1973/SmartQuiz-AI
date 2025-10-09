@@ -58,40 +58,50 @@ def detect_mcq(text):
 # PARSE EXISTING MCQs
 # ==========================
 def parse_mcqs(text):
-    """Parses text to extract MCQ questions, options, and answers."""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    """Enhanced parser that handles flexible MCQ styles (like *1. A) ... Ans:)."""
+    # Clean text: remove weird characters and normalize line breaks
+    text = re.sub(r'\r', '', text)
+    text = re.sub(r'\*+', '', text)  # remove asterisks (*)
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+
     questions = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if re.match(r"^(Q\s*\d+|Question\s*\d+)", line, re.IGNORECASE) or line.endswith("?"):
-            q = re.sub(r"^(Q\s*\d+[:.)]?\s*|Question\s*\d+[:.)]?\s*)", "", line, flags=re.IGNORECASE).strip()
-            i += 1
-            options = []
-            while i < len(lines) and len(options) < 6:
-                opt_match = re.match(r"^[A-Da-d][\).:\-]\s*(.*)$", lines[i])
-                if opt_match:
-                    options.append(opt_match.group(1).strip())
-                    i += 1
-                else:
-                    break
-            correct = None
-            if i < len(lines) and re.match(r"^(Answer|Ans|Key)", lines[i], re.IGNORECASE):
-                ans_match = re.search(r"([A-Da-d])", lines[i])
-                if ans_match:
-                    correct = ans_match.group(1).upper()
-                i += 1
-            if options:
-                while len(options) < 4:
-                    options.append("N/A")
-                questions.append({
-                    "question": q,
-                    "options": options[:4],
-                    "correct": correct or "A"
-                })
+    buffer = ""
+
+    for line in lines:
+        # Detect question start lines
+        if re.match(r"^(Q?\s*\d+[\).]|Question\s*\d+[\).])", line, re.IGNORECASE):
+            if buffer:
+                questions.append(buffer.strip())
+            buffer = line
         else:
-            i += 1
-    return questions
+            buffer += " " + line
+    if buffer:
+        questions.append(buffer.strip())
+
+    parsed = []
+    for q in questions:
+        # Extract question text
+        q_text_match = re.match(r"^(Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", q)
+        q_text = q_text_match.group(2).strip() if q_text_match else q
+
+        # Extract options
+        opts = re.findall(r"[A-Da-d][).:\-]\s*([^A-Da-d]+?)(?=\s+[A-Da-d][).:\-]|$)", q)
+        opts = [o.strip() for o in opts if o.strip()]
+
+        # Extract correct answer (supports Answer: or Ans:)
+        ans_match = re.search(r"(?:Answer|Ans)\s*[:\-]?\s*([A-Da-d])", q, re.IGNORECASE)
+        correct = ans_match.group(1).upper() if ans_match else "A"
+
+        if len(opts) >= 2:
+            while len(opts) < 4:
+                opts.append("N/A")
+            parsed.append({
+                "question": q_text,
+                "options": opts[:4],
+                "correct": correct
+            })
+
+    return parsed
 
 
 # ==========================
