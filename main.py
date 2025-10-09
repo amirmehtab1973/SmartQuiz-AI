@@ -14,6 +14,7 @@ from utils import (
     record_attempt,
     list_attempts,
 )
+
 # ==========================
 # CONFIG / SECRETS SECTION
 # ==========================
@@ -23,8 +24,6 @@ if hasattr(st, "secrets"):
     EMAIL_PASS = st.secrets.get("EMAIL_PASS", None)
     ADMIN_USER = st.secrets.get("ADMIN_USER", "admin")
     ADMIN_PASS = st.secrets.get("ADMIN_PASS", "admin123")
-    JWT_SECRET = st.secrets.get("JWT_SECRET", "super_secret_key")
-    MONGODB_URI = st.secrets.get("MONGODB_URI", "")
 else:
     from dotenv import load_dotenv
     load_dotenv()
@@ -33,20 +32,17 @@ else:
     EMAIL_PASS = os.getenv("EMAIL_PASS")
     ADMIN_USER = os.getenv("ADMIN_USER", "admin")
     ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
-    JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_key")
-    MONGODB_URI = os.getenv("MONGODB_URI", "")
 
-# Configure OpenAI API
 openai.api_key = OPENAI_API_KEY
 
-# temporary diagnostic check
+# API Key check
 if not OPENAI_API_KEY:
     st.error("⚠️ OpenAI API key not found in secrets.")
 else:
     st.success("✅ OpenAI key loaded successfully.")
 
 # ==========================
-# GLOBAL FALLBACK STORAGE (JSON)
+# GLOBAL STORAGE
 # ==========================
 LOCAL_QUIZ_FILE = "quizzes.json"
 LOCAL_RESULTS_FILE = "results.json"
@@ -64,12 +60,11 @@ def save_local_data(file, data):
     with open(file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-# Load existing quizzes & results (if no DB)
 quizzes = load_local_data(LOCAL_QUIZ_FILE)
 results = load_local_data(LOCAL_RESULTS_FILE)
 
 # ==========================
-# STREAMLIT APP CONFIG
+# STREAMLIT CONFIG
 # ==========================
 st.set_page_config(page_title="SmartQuiz AI", layout="wide")
 
@@ -77,7 +72,7 @@ st.markdown(
     """
     <style>
     .main {
-        background-color: #1e1e2f;
+        background-color: #0e1117;
         color: white;
     }
     .stButton>button {
@@ -92,7 +87,7 @@ st.markdown(
 st.title("🎓 SmartQuiz AI – Automated Quiz Generator")
 
 # ==========================
-# LOGIN SYSTEM
+# LOGIN & MODE SELECTION
 # ==========================
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -116,12 +111,9 @@ if mode == "Admin":
         st.stop()
 
     st.sidebar.success("Logged in as Admin")
-
     tabs = st.tabs(["📤 Upload Document", "📚 Manage Quizzes", "📊 Student Results"])
 
-    # --------------------------
     # TAB 1: UPLOAD DOCUMENT
-    # --------------------------
     with tabs[0]:
         st.subheader("📄 Upload New Quiz Document")
         uploaded_file = st.file_uploader("Choose a document (PDF, DOCX, or TXT)", type=["pdf", "docx", "txt"])
@@ -129,43 +121,42 @@ if mode == "Admin":
         if uploaded_file:
             file_bytes = uploaded_file.read()
             text = extract_text_from_file(file_bytes, uploaded_file.name)
-            st.write(f"Characters extracted: {len(text)}")
-            st.text_area("Extracted Text (Debug – full)", text, height=400)
 
-        # debug display line
-            st.text_area("Parsed MCQs (Debug)", "\n\n".join([q["question"] for q in mcqs]))
+            st.text_area("Extracted Text (Debug – full)", text, height=300)
+
             if not text.strip():
                 st.error("⚠️ Could not extract text from the file.")
             else:
                 with st.spinner("Analyzing document..."):
                     is_mcq = detect_mcq(text)
                     if is_mcq:
-                        questions = parse_mcqs(text)
+                        mcqs = parse_mcqs(text)
+                        st.info(f"🧾 Detected existing MCQs in document: {len(mcqs)} found.")
                     else:
-                        questions = generate_mcqs_via_openai(text)
+                        st.warning("⚙️ No clear MCQs found. Generating automatically via AI…")
+                        mcqs = generate_mcqs_via_openai(text, n_questions=10)
 
-                if not questions:
-                    st.error("❌ No MCQs could be generated or detected.")
-                else:
-                    st.success(f"✅ {len(questions)} questions ready.")
+                if mcqs and len(mcqs) > 0:
+                    st.success(f"✅ {len(mcqs)} MCQs are ready!")
+                    st.text_area("Parsed MCQs (Debug)", "\n\n".join([q["question"] for q in mcqs]), height=200)
+
                     quiz_title = st.text_input("Enter Quiz Title")
-                    if st.button("Save Quiz"):
+                    if st.button("💾 Save Quiz"):
                         if not quiz_title.strip():
                             st.error("Please enter a quiz title.")
                         else:
                             quiz_obj = {
                                 "title": quiz_title.strip(),
-                                "questions": questions,
+                                "questions": mcqs,
                                 "created_at": datetime.utcnow().isoformat(),
                             }
                             quizzes.append(quiz_obj)
                             save_local_data(LOCAL_QUIZ_FILE, quizzes)
                             st.success(f"✅ Quiz '{quiz_title}' saved successfully!")
-    
+                else:
+                    st.error("❌ No MCQs could be detected or generated.")
 
-    # --------------------------
     # TAB 2: MANAGE QUIZZES
-    # --------------------------
     with tabs[1]:
         st.subheader("🗂 Manage Quizzes")
         if not quizzes:
@@ -180,9 +171,7 @@ if mode == "Admin":
                         st.warning(f"Deleted quiz '{q['title']}'")
                         st.experimental_rerun()
 
-    # --------------------------
     # TAB 3: STUDENT RESULTS
-    # --------------------------
     with tabs[2]:
         st.subheader("📊 Student Results")
         results = load_local_data(LOCAL_RESULTS_FILE)
@@ -210,60 +199,53 @@ if mode == "Admin":
 # ==========================
 # STUDENT PANEL
 # ==========================
-import json
-import re
+elif mode == "Student":
+    st.header("🎓 Student Quiz Panel")
 
-# --- Student Panel ---
-st.header("🎓 Student Quiz Panel")
+    quiz_titles = [q["title"] for q in quizzes] if quizzes else []
+    if not quiz_titles:
+        st.warning("No quizzes available yet. Please ask admin to upload one.")
+    else:
+        selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
+        selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
 
-quiz_titles = [q["title"] for q in quizzes] if quizzes else []
-if not quiz_titles:
-    st.warning("No quizzes available yet. Please ask admin to upload one.")
-else:
-    selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
-    selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
+        if selected:
+            mcqs = selected.get("questions", [])
+            st.subheader(f"📘 Quiz: {selected['title']}")
 
-    if selected:
-        # Load selected quiz file safely
-        quiz_path = f"quizzes/{selected['title']}.json"
-        if os.path.exists(quiz_path):
-            with open(quiz_path, "r", encoding="utf-8") as f:
-                mcqs = json.load(f)
-        else:
-            st.error("Quiz file not found.")
-            mcqs = []
+            student_name = st.text_input("Your Name")
+            student_email = st.text_input("Your Email")
 
-        st.subheader(f"📘 Quiz: {selected['title']}")
-        student_name = st.text_input("Your Name")
-        student_email = st.text_input("Your Email")
+            if student_name and student_email:
+                answers = {}
+                for i, q in enumerate(mcqs):
+                    st.subheader(f"Q{i+1}. {q['question']}")
+                    clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
+                    choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
+                    answers[q["question"]] = choice
+                    st.write("")
 
-        if student_name and student_email:
-            answers = {}
-            for i, q in enumerate(mcqs):
-                st.subheader(f"Q{i+1}. {q['question']}")
-                clean_options = [re.sub(r'\s+', ' ', opt).strip() for opt in q["options"] if opt.strip()]
-                choice = st.radio("Choose answer:", clean_options, key=f"q_{i}")
-                answers[q["question"]] = choice
-                st.write("")
+                if st.button("Submit Quiz"):
+                    score = sum(
+                        1
+                        for q in mcqs
+                        if answers.get(q["question"]) == q["options"][ord(q["correct"]) - 65]
+                    )
+                    total = len(mcqs)
+                    st.success(f"✅ You scored {score} out of {total}")
 
-            if st.button("Submit Quiz"):
-                score = sum(
-                    1 for q in mcqs if answers.get(q["question"]) == q["options"][ord(q["correct"]) - 65]
-                )
-                st.success(f"✅ You scored {score} out of {len(mcqs)}")
+                    # Save result locally
+                    attempt = {
+                        "student_name": student_name,
+                        "student_email": student_email,
+                        "quiz_title": selected_quiz,
+                        "score": score,
+                        "total": total,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    results.append(attempt)
+                    save_local_data(LOCAL_RESULTS_FILE, results)
 
-            attempt = {
-                "student_name": student_name,
-                "student_email": student_email,
-                "quiz_title": selected_quiz,
-                "score": score,
-                "total": total,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-            results.append(attempt)
-            save_local_data(LOCAL_RESULTS_FILE, results)
-
-            # Email result
-            send_result_email(student_email, student_name, selected_quiz, score, total)
-            st.info("📧 Result emailed successfully!")
-
+                    # Email result
+                    send_result_email(student_email, student_name, selected_quiz, score, total)
+                    st.info("📧 Result emailed successfully!")
