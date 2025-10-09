@@ -69,46 +69,75 @@ def detect_mcq(text):
 # PARSE EXISTING MCQs
 # ==========================
 def parse_mcqs(text):
-    """Parses text to extract MCQs in multiple numbering formats."""
-    text = text.replace("\r", "\n")
-    text = re.sub(r"\*+", "", text)
-    text = re.sub(r"\s{2,}", " ", text)
+    """Robust MCQ parser that handles PDFs, DOCX, and multiple formats like '1.', '1)', 'Q1.', etc."""
+    import re
+
+    # Normalize text
+    text = text.replace("\r", "")
+    text = re.sub(r"\*+", "", text)  # remove asterisks
+    text = re.sub(r"\s{2,}", " ", text)  # collapse multiple spaces
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    mcqs = []
-    q = None
-    options = []
-    answer_raw = None
-
-    question_pattern = re.compile(r"^(?:Q?\s*\d+[\).]|[ivx]+\)|[ivx]+\.)\s*(.*)", re.IGNORECASE)
-    option_pattern = re.compile(r"^[A-Da-d][\).:\-]?\s*(.*)")
-    answer_pattern = re.compile(r"^(?:Ans|Answer|Key)[:\-]?\s*(.*)", re.IGNORECASE)
+    questions = []
+    q_block = []
 
     for line in lines:
-        qm = question_pattern.match(line)
-        om = option_pattern.match(line)
-        am = answer_pattern.match(line)
-
-        if qm:
-            if q and options:
-                mcqs.append(_finalize_mcq(q, options, answer_raw))
-            q = qm.group(1).strip()
-            options = []
-            answer_raw = None
-        elif om:
-            options.append(om.group(1).strip())
-        elif am:
-            answer_raw = am.group(1).strip()
+        # Detect new question start: Q1., 1., 1), i), ii), etc.
+        if re.match(r"^(Q?\s*\d+[\).]|\(?[ivxlcdm]+\))", line, re.IGNORECASE):
+            if q_block:
+                questions.append(" ".join(q_block))
+                q_block = []
+            q_block.append(line)
         else:
-            if options:
-                options[-1] = (options[-1] + " " + line.strip()).strip()
-            elif q:
-                q = (q + " " + line.strip()).strip()
+            q_block.append(line)
 
-    if q and options:
-        mcqs.append(_finalize_mcq(q, options, answer_raw))
+    if q_block:
+        questions.append(" ".join(q_block))
 
-    return mcqs
+    parsed = []
+    for qb in questions:
+        # Extract question text
+        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
+        q_text = q_match.group(1).strip() if q_match else qb
+
+        # Extract options — works for A), A., A:
+        opts = re.findall(r"([A-Da-d][).:\-]\s*[^A-Da-d]+)", qb)
+        clean_opts = []
+        for o in opts:
+            o = re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip()
+            clean_opts.append(o)
+        clean_opts = clean_opts[:4]
+
+        # Detect answer pattern
+        ans_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])", qb, re.IGNORECASE)
+        correct = ans_match.group(1).upper() if ans_match else None
+
+        # Fallback: if no A/B/C/D found but text like "Answer is Artificial Intelligence"
+        if not correct:
+            alt = re.search(r"(?:Answer|Ans)\s*(?:is|=)?\s*(.*)", qb, re.IGNORECASE)
+            if alt:
+                possible_ans_text = alt.group(1).strip()
+                for i, opt in enumerate(clean_opts):
+                    if possible_ans_text.lower() in opt.lower():
+                        correct = chr(65 + i)
+                        break
+
+        # Final fallback
+        if not correct:
+            correct = "A"
+
+        # Ensure exactly 4 options
+        while len(clean_opts) < 4:
+            clean_opts.append("N/A")
+
+        parsed.append({
+            "question": q_text,
+            "options": clean_opts[:4],
+            "correct": correct
+        })
+
+    return parsed
+
 
 
 def _finalize_mcq(q, options, answer_raw):
