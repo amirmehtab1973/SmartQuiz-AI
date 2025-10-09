@@ -137,6 +137,9 @@ def generate_mcqs_via_openai(text, n_questions=8):
         return questions
     except Exception as e:
         print(f"[ERROR] generate_mcqs_via_openai: {e}")
+# Plz delete after debug
+print("DEBUG: OpenAI response content:")
+print(response.choices[0].message.content)
         return []
 
 
