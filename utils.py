@@ -57,53 +57,66 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Robust parser tuned for MCQ documents with mixed numbering and line wrapping.
-    Prevents false question detection on lines like '2. C) ...'.
+    FINAL robust MCQ parser — safely handles numbered, bulleted, and formatted MCQs.
+    Prevents extra questions from being created from option lines like 'C) Artificial Intelligence'.
     """
+    import re
+
+    # Normalize text and remove junk
     text = (text or "").replace("\r", "\n")
     text = re.sub(r"\*+", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     blocks = []
-    cur = []
-    # Regex for question start: number or Q1. or 1) but not if immediately followed by A)/B)/C)/D)
-    q_start_re = re.compile(r"^\s*(?:Q?\s*\d+[\).]|[ivxlcdm]+\))\s+(?![A-D][).])", re.IGNORECASE)
+    cur_block = []
+
+    def is_question_start(line: str) -> bool:
+        # Line starts like '1.', '1)', 'Q1', etc. AND contains a question mark OR key words
+        if re.match(r"^(?:Q?\s*\d+[\).]|\d+\.)\s*", line, re.IGNORECASE):
+            # Avoid false triggers: skip if starts with A–D)
+            if re.match(r"^(?:Q?\s*\d+[\).]?\s*[A-D][).])", line, re.IGNORECASE):
+                return False
+            # Real question if ends with '?' or has words like 'what', 'which', 'who', etc.
+            if "?" in line or re.search(r"\b(what|which|who|when|where|why|how)\b", line, re.IGNORECASE):
+                return True
+        return False
 
     for line in lines:
-        if q_start_re.match(line):
-            if cur:
-                blocks.append("\n".join(cur).strip())
-            cur = [line]
+        if is_question_start(line):
+            if cur_block:
+                blocks.append("\n".join(cur_block))
+                cur_block = []
+            cur_block.append(line)
         else:
-            cur.append(line)
-    if cur:
-        blocks.append("\n".join(cur).strip())
+            cur_block.append(line)
+    if cur_block:
+        blocks.append("\n".join(cur_block))
 
     parsed = []
     for block in blocks:
-        if not block or len(block.strip()) < 5:
+        if not block.strip():
             continue
 
-        # Extract question text before first option
-        q_match = re.match(r"^\s*(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
+        # Extract question text
+        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
         q_text = q_match.group(1).strip() if q_match else block.strip()
 
         # Extract options
         options = []
-        opt_re = re.compile(r"([A-Da-d])[\).:\-]\s*([^A-Da-d\n]+)")
+        opt_re = re.compile(r"^[A-Da-d][).:\-]\s*(.+)$", re.MULTILINE)
         for m in opt_re.finditer(block):
-            opt_text = m.group(2).strip()
-            opt_text = re.sub(r"\s+", " ", opt_text)
-            options.append(opt_text)
+            opt = re.sub(r"\s+", " ", m.group(1).strip())
+            options.append(opt)
+        options = options[:4] if options else ["N/A", "N/A", "N/A", "N/A"]
         while len(options) < 4:
             options.append("N/A")
-        options = options[:4]
 
-        # Find answer letter
-        ans_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])", block, re.IGNORECASE)
+        # Detect correct answer letter
+        ans_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])\b", block, re.IGNORECASE)
         correct = ans_match.group(1).upper() if ans_match else None
 
-        # Fallback textual answer detection
+        # Try textual match fallback
         if not correct:
             ans_text_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*(.+)", block, re.IGNORECASE)
             if ans_text_match:
@@ -112,14 +125,16 @@ def parse_mcqs(text):
                     if ans_text.lower() in o.lower() or o.lower() in ans_text.lower():
                         correct = chr(65 + i)
                         break
+
+        # Default heuristic: choose “All of the above” if present
         if not correct:
-            # default heuristic
             for i, o in enumerate(options):
                 if "all of the above" in o.lower():
                     correct = chr(65 + i)
                     break
-        if not correct:
-            correct = "A"
+
+        # Fallback
+        correct = correct or "A"
 
         parsed.append({
             "question": q_text,
@@ -127,8 +142,16 @@ def parse_mcqs(text):
             "correct": correct
         })
 
-    return parsed
+    # De-duplicate questions (some PDFs repeat line numbers)
+    unique = []
+    seen = set()
+    for q in parsed:
+        key = q["question"][:80]
+        if key not in seen:
+            seen.add(key)
+            unique.append(q)
 
+    return unique
 
 
 # ==========================
