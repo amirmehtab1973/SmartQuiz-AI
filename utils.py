@@ -59,22 +59,22 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Final bulletproof MCQ parser (v6)
-    ✅ Handles 1., 1), Q1., i)
-    ✅ Works even if 'Ans:' is on the same or next line
-    ✅ Ensures all numbered questions are captured
-    ✅ Prevents double numbering like '1. 1.'
-    ✅ Cleans quiz titles and filler text
+    FINAL v7 – Stable MCQ parser
+    ✅ Detects 1., 1), Q1., i)
+    ✅ Captures last question even without next marker
+    ✅ Handles 'Ans:' on same or next line
+    ✅ Prevents duplicate or filler headings
+    ✅ Ensures 4 options and correct answer mapping
     """
     import re
 
-    # Normalize
+    # Normalize and clean text
     text = text.replace("\r", "")
     text = re.sub(r"[*_]+", "", text)
     text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Remove non-question filler
+    # Remove filler or title lines
     ignore_phrases = [
         "compulsory quiz",
         "short quiz",
@@ -84,24 +84,24 @@ def parse_mcqs(text):
     ]
     lines = [l for l in lines if not any(p in l.lower() for p in ignore_phrases)]
 
-    # Combine lines and fix broken "Ans:"
     combined = "\n".join(lines)
     combined = re.sub(r"(Ans\s*[:\-]?\s*[A-Da-d])", r"\n\1\n", combined, flags=re.IGNORECASE)
 
-    # 🔹 Split based on numbered question patterns (even if preceded by text)
+    # ✅ Add sentinel marker to ensure last question captured
+    combined += "\nQ9999. END"
+
+    # Split questions on numeric markers (1., 2), Q3., etc.)
     q_blocks = re.split(r"(?m)(?=^(?:Q?\s*\d+[\).]\s+))", combined)
-    q_blocks = [q.strip() for q in q_blocks if len(q.strip()) > 10]
+    q_blocks = [q.strip() for q in q_blocks if len(q.strip()) > 10 and not q.strip().startswith("Q9999")]
 
     mcqs = []
     for block in q_blocks:
-        # Detect correct answer (Ans: X)
+        # Detect correct answer
         ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", block, re.IGNORECASE)
         correct = ans_match.group(1).upper() if ans_match else "A"
-
-        # Remove answer label from text
         block = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", block, flags=re.IGNORECASE)
 
-        # Extract question text and options
+        # Extract question + options
         parts = re.split(r"(?m)(?=^[A-Da-d][).:\-]\s+)", block)
         if len(parts) > 1:
             q_text = parts[0].strip()
@@ -110,14 +110,13 @@ def parse_mcqs(text):
             q_text = block.strip()
             opts = []
 
-        # Clean double numbering like "1. 1. What is..."
+        # Clean repeated numbering like "1. 1. What is..."
         q_text = re.sub(r"^(?:Q?\s*\d+[\).]\s*){1,2}", "", q_text).strip()
 
-        # Skip lines too short to be valid questions
         if len(q_text.split()) < 3:
             continue
 
-        # Fill missing options up to 4
+        # Ensure 4 options
         while len(opts) < 4:
             opts.append("N/A")
         opts = opts[:4]
@@ -128,7 +127,7 @@ def parse_mcqs(text):
             "correct": correct
         })
 
-    # 🔹 Deduplicate by question text
+    # Deduplicate
     unique = []
     seen = set()
     for q in mcqs:
