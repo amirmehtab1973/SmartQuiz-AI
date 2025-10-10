@@ -59,22 +59,31 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Final reliable MCQ parser — works with various numbering (1., 1), Q1.), ignores titles,
-    keeps multi-line options, and extracts correct answers (Ans: X).
+    Final parse_mcqs(): handles multi-line options, titles, various numbering,
+    and accurate 'Ans:' extraction.
     """
 
     import re
 
-    # Normalize text
+    # Normalize and clean text
     text = text.replace("\r", "\n")
     text = re.sub(r"\*+", "", text)
     text = re.sub(r"\n{2,}", "\n", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Combine lines into blocks by question numbers
+    # --- Merge broken lines (e.g. split A) Virtual assistants like Siri or\nAlexa)
+    merged = []
+    for i, line in enumerate(lines):
+        # If the line doesn't start like "A)" but previous line was an option → merge it
+        if i > 0 and not re.match(r"^[A-D][).:\-]\s*", line) and re.match(r"^[A-D][).:\-]\s*", lines[i - 1]):
+            merged[-1] = merged[-1] + " " + line
+        else:
+            merged.append(line)
+    lines = merged
+
+    # --- Group by question number
     blocks, current = [], []
     for line in lines:
-        # Start of a new question (formats like 1., 1), Q1., Question 1:)
         if re.match(r"^(?:Q?\s*\d+[\).:]|\bQuestion\s*\d+)", line, re.IGNORECASE):
             if current:
                 blocks.append(" ".join(current))
@@ -86,34 +95,38 @@ def parse_mcqs(text):
 
     mcqs = []
     for block in blocks:
-        # Skip intros like "Compulsory Quiz..." (no A/B/C/D present)
-        if not re.search(r"\b[A-D][\).:\-]", block):
+        # Skip quiz titles or non-question text
+        if not re.search(r"\b[A-D][).:\-]", block):
             continue
 
-        # Capture answer labels (Ans: A/B/C/D)
-        ans_match = re.search(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*([A-D])", block)
+        # Find answer key
+        ans_match = re.search(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*([A-D])\b", block)
         correct = ans_match.group(1).upper() if ans_match else "A"
 
-        # Extract question text before first option
-        q_match = re.match(r"^(?:Q?\s*\d+[\).:]?\s*)(.*?)(?=\s+[A-D][\).:\-])", block)
+        # Extract question
+        q_match = re.match(r"^(?:Q?\s*\d+[\).:]?\s*)(.*?)(?=\s+[A-D][).:\-])", block)
         q_text = q_match.group(1).strip() if q_match else block
 
-        # Extract options
-        opts_raw = re.findall(r"[A-D][).:\-]\s*([^A-D@]+)", block)
-        options = [re.sub(r"\s+", " ", o.strip()) for o in opts_raw if o.strip()]
+        # Extract options A–D
+        opts = re.findall(r"[A-D][).:\-]\s*([^A-D@]+)", block)
+        options = [re.sub(r"\s+", " ", o).strip() for o in opts if o.strip()]
 
-        # Pad/truncate to 4 options
+        # Clean "Ans: X" remnants
+        options = [re.sub(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*[A-D]\b", "", o).strip() for o in options]
+
+        # Pad/truncate to exactly 4 options
         while len(options) < 4:
             options.append("N/A")
         options = options[:4]
 
+        # Add question to list
         mcqs.append({
             "question": q_text,
             "options": options,
             "correct": correct
         })
 
-    # Filter out false questions (like titles)
+    # Filter out junk blocks (titles)
     filtered = [m for m in mcqs if len([o for o in m["options"] if len(o) > 2]) >= 2]
 
     return filtered
