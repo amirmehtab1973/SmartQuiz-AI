@@ -68,52 +68,62 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Final stable MCQ parser – correctly extracts 1), 1., Q1, or *1 formats.
-    Ensures correct answer alignment and skips stray option lines.
+    Final robust MCQ parser.
+    Supports patterns like:
+    1., 1), Q1., i), with or without '?'
+    Ensures correct Ans: mapping and prevents dropped questions.
     """
 
     import re
 
-    # Clean text
+    # Normalize text
     text = text.replace("\r", "")
     text = re.sub(r"[*_]+", "", text)
     text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Remove common noise
-    ignore_lines = [
-        "compulsory quiz", "here are some more questions", "day", "short quiz"
+    # Remove quiz intro / filler lines
+    ignore_phrases = [
+        "compulsory quiz",
+        "day",
+        "short quiz",
+        "here are some more questions"
     ]
-    lines = [l for l in lines if not any(p in l.lower() for p in ignore_lines)]
+    lines = [l for l in lines if not any(p in l.lower() for p in ignore_phrases)]
 
-    # Join split lines correctly
+    # Join lines into one big text block
     joined = " ".join(lines)
 
-    # Split into question blocks using patterns like 1.  1)  Q1.  i)
-    question_splits = re.split(r"(?:(?:^|\s)(?:Q?\s*\d+[\).]|[ivxlcdm]+\)))", joined)
-    # the first split may be junk before first question
-    question_splits = [q.strip() for q in question_splits if len(q.strip()) > 10]
+    # Split into blocks at start of questions: 1. / 1) / Q1 / i)
+    question_splits = re.split(
+        r"(?=(?:^|\s)(?:Q?\s*\d+[\).]|[ivxlcdm]+\)))", joined, flags=re.IGNORECASE
+    )
+
+    # Filter out short/junk blocks
+    question_splits = [q.strip() for q in question_splits if len(q.strip()) > 15]
 
     mcqs = []
     for qblock in question_splits:
-        # Extract answer first
+        # Extract correct answer (Ans:)
         ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", qblock, re.IGNORECASE)
         correct = ans_match.group(1).upper() if ans_match else "A"
         qblock = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", qblock, flags=re.IGNORECASE)
 
-        # Find all options (A-D)
-        options = re.findall(r"(?:^|\s)([A-Da-d][).:\-]\s*[^A-Da-d]+)", qblock)
-        options = [re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip() for o in options if o.strip()]
+        # Find all options (A) to D))
+        opts = re.findall(r"(?:^|\s)([A-Da-d][).:\-]\s*[^A-Da-d]+)", qblock)
+        options = [re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip() for o in opts if o.strip()]
 
-        # Extract question (text before first A)/B))
-        qtext_match = re.split(r"[A-Da-d][).:\-]\s*", qblock, maxsplit=1)
-        q_text = qtext_match[0].strip() if qtext_match else qblock
+        # Extract question text (before first A)/B))
+        split_q = re.split(r"[A-Da-d][).:\-]\s*", qblock, maxsplit=1)
+        q_text = split_q[0].strip() if split_q else qblock
 
-        # Remove filler lines
-        if len(q_text.split()) < 3 or "quiz" in q_text.lower():
+        # If no "?" but text contains "following" or "is", still treat as a question
+        if not q_text.endswith("?") and re.search(r"\b(following|is|are|which|what)\b", q_text, re.IGNORECASE):
+            pass
+        elif len(q_text.split()) < 3:
             continue
 
-        # Normalize options
+        # Clean up and normalize options
         while len(options) < 4:
             options.append("N/A")
         options = options[:4]
@@ -124,13 +134,13 @@ def parse_mcqs(text):
             "correct": correct
         })
 
-    # Remove duplicates by question text
+    # Deduplicate questions
     unique_mcqs = []
     seen = set()
     for q in mcqs:
-        q_clean = q["question"].lower()
-        if q_clean not in seen:
-            seen.add(q_clean)
+        qt = q["question"].lower()
+        if qt not in seen and len(qt) > 10:
+            seen.add(qt)
             unique_mcqs.append(q)
 
     return unique_mcqs
