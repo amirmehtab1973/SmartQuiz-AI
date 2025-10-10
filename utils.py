@@ -57,27 +57,29 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    FINAL robust MCQ parser — safely handles numbered, bulleted, and formatted MCQs.
-    Prevents extra questions from being created from option lines like 'C) Artificial Intelligence'.
+    Final robust MCQ parser.
+    Handles numbered questions (1., 1), Q1), i)), ignores titles/instructions,
+    extracts correct answers accurately (including text matches like 'Ans: D').
     """
+
     import re
 
-    # Normalize text and remove junk
+    # Clean and normalize text
     text = (text or "").replace("\r", "\n")
     text = re.sub(r"\*+", "", text)
     text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    blocks = []
-    cur_block = []
+    blocks, cur_block = [], []
 
     def is_question_start(line: str) -> bool:
-        # Line starts like '1.', '1)', 'Q1', etc. AND contains a question mark OR key words
+        """
+        Detect start of a real question — must be numbered (1., Q1, etc.)
+        and either end with '?' or contain typical question words.
+        """
         if re.match(r"^(?:Q?\s*\d+[\).]|\d+\.)\s*", line, re.IGNORECASE):
-            # Avoid false triggers: skip if starts with A–D)
             if re.match(r"^(?:Q?\s*\d+[\).]?\s*[A-D][).])", line, re.IGNORECASE):
                 return False
-            # Real question if ends with '?' or has words like 'what', 'which', 'who', etc.
             if "?" in line or re.search(r"\b(what|which|who|when|where|why|how)\b", line, re.IGNORECASE):
                 return True
         return False
@@ -102,21 +104,27 @@ def parse_mcqs(text):
         q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
         q_text = q_match.group(1).strip() if q_match else block.strip()
 
-        # Extract options
+        # Skip non-question heading-type lines (no '?', no typical question words)
+        if not ("?" in q_text or re.search(r"\b(what|which|who|when|where|why|how)\b", q_text, re.IGNORECASE)):
+            continue
+
+        # Extract options (A–D)
         options = []
         opt_re = re.compile(r"^[A-Da-d][).:\-]\s*(.+)$", re.MULTILINE)
         for m in opt_re.finditer(block):
             opt = re.sub(r"\s+", " ", m.group(1).strip())
             options.append(opt)
-        options = options[:4] if options else ["N/A", "N/A", "N/A", "N/A"]
+        if not options:
+            options = ["N/A", "N/A", "N/A", "N/A"]
         while len(options) < 4:
             options.append("N/A")
+        options = options[:4]
 
-        # Detect correct answer letter
+        # Detect correct answer letter or text
         ans_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])\b", block, re.IGNORECASE)
         correct = ans_match.group(1).upper() if ans_match else None
 
-        # Try textual match fallback
+        # Textual fallback (if "Ans: All of the above")
         if not correct:
             ans_text_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*(.+)", block, re.IGNORECASE)
             if ans_text_match:
@@ -126,14 +134,14 @@ def parse_mcqs(text):
                         correct = chr(65 + i)
                         break
 
-        # Default heuristic: choose “All of the above” if present
+        # Heuristic: if "All of the above" exists, set that as correct if not found
         if not correct:
             for i, o in enumerate(options):
                 if "all of the above" in o.lower():
                     correct = chr(65 + i)
                     break
 
-        # Fallback
+        # Default fallback
         correct = correct or "A"
 
         parsed.append({
@@ -142,16 +150,17 @@ def parse_mcqs(text):
             "correct": correct
         })
 
-    # De-duplicate questions (some PDFs repeat line numbers)
+    # De-duplicate by question text (avoid duplicates from page headers or OCR)
     unique = []
     seen = set()
     for q in parsed:
-        key = q["question"][:80]
+        key = q["question"][:100]
         if key not in seen:
             seen.add(key)
             unique.append(q)
 
     return unique
+
 
 
 # ==========================
