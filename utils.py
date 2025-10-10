@@ -67,18 +67,30 @@ def detect_mcq(text):
 # PARSE MCQs (IMPROVED)
 # ==========================
 def parse_mcqs(text):
-    """Parses MCQs from text in mixed formats (PDF/DOCX/TXT)."""
+    """
+    Ultra-robust MCQ parser that handles mixed formats, asterisks, PDFs, and misplaced options.
+    It ensures the correct answer (Ans: X) is attached to the right question.
+    """
+    import re
+
+    # 1️⃣ Clean text
     text = re.sub(r"[*_]+", "", text)
     text = text.replace("\r", "").strip()
-
-    # Remove extra blank lines and headers like "Here are some more questions..."
     lines = [l.strip() for l in text.split("\n") if l.strip()]
-    lines = [l for l in lines if not re.search(r"Here are some more|Compulsory Quiz", l, re.I)]
 
+    # Remove noise lines (headers, “Here are some more questions” etc.)
+    ignore_phrases = [
+        "compulsory quiz", "here are some more", "day", "short quiz"
+    ]
+    lines = [l for l in lines if not any(p in l.lower() for p in ignore_phrases)]
+
+    # 2️⃣ Group lines into question blocks
     blocks = []
     current = []
+
     for line in lines:
-        if re.match(r"^(?:Q?\s*\d+[\).]|[ivxlcdm]+\))", line.strip(), re.IGNORECASE):
+        # Detect question start formats: 1., 1), Q1., i)
+        if re.match(r"^(?:Q?\s*\d+[\).]|[ivxlcdm]+\))", line, re.IGNORECASE):
             if current:
                 blocks.append(" ".join(current))
                 current = []
@@ -90,44 +102,49 @@ def parse_mcqs(text):
 
     mcqs = []
     for block in blocks:
-        # Extract question text (everything before first A)/B)/C)/D) )
-        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
-        q_text = q_match.group(1).strip() if q_match else block
+        # Skip if it’s too short
+        if len(block.split()) < 3:
+            continue
 
-        # Find options
-        options = re.findall(r"[A-Da-d][).:\-]\s*([^A-Da-d]+)", block)
-        options = [o.strip() for o in options if o.strip()]
-        if len(options) < 4:
-            while len(options) < 4:
-                options.append("N/A")
-
-        # Detect correct answer (Ans: X)
+        # Extract answer first
         ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", block, re.IGNORECASE)
         correct = ans_match.group(1).upper() if ans_match else "A"
 
-        # Clean up any garbage like “Here are some…” after answers
-        q_text = re.sub(r"Ans\s*[:\-]?\s*[A-Da-d].*", "", q_text, flags=re.IGNORECASE)
+        # Remove “Ans: X” from block text
+        block = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", block, flags=re.IGNORECASE)
 
-        if len(q_text.split()) < 3:
-            continue  # skip non-question junk lines
+        # Extract question part (everything before first option)
+        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
+        q_text = q_match.group(1).strip() if q_match else block
+
+        # Extract all options
+        options = re.findall(r"[A-Da-d][).:\-]\s*([^A-Da-d]+)", block)
+        options = [re.sub(r"\s+", " ", o).strip() for o in options if o.strip()]
+
+        # Normalize options length
+        while len(options) < 4:
+            options.append("N/A")
+        options = options[:4]
+
+        # Skip junk lines (like “Artificial Intelligence” alone)
+        if len(q_text.split()) < 4:
+            continue
 
         mcqs.append({
-            "question": q_text.strip(),
-            "options": options[:4],
+            "question": q_text,
+            "options": options,
             "correct": correct
         })
 
-    # remove duplicates and misreads
-    final_mcqs = []
+    # 3️⃣ Deduplicate questions
+    unique_mcqs = []
     seen = set()
     for q in mcqs:
-        qt = q["question"].lower()
-        if qt not in seen and not qt.startswith("compulsory quiz"):
-            final_mcqs.append(q)
-            seen.add(qt)
+        if q["question"].lower() not in seen:
+            seen.add(q["question"].lower())
+            unique_mcqs.append(q)
 
-    return final_mcqs
-
+    return unique_mcqs
 
 # ==========================
 # GENERATE MCQs USING OPENAI
