@@ -57,110 +57,187 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Final robust MCQ parser.
-    Handles numbered questions (1., 1), Q1), i)), ignores titles/instructions,
-    extracts correct answers accurately (including text matches like 'Ans: D').
+    Robust parser using span-based extraction:
+    - Finds question start positions (1., 1) , Q1.), builds block = [start..next_start)
+    - Extracts options A)-D) from block (supports multi-line options)
+    - Finds last Ans: inside block and maps to the correct option
+    - Filters out headings / short non-question blocks
     """
-
     import re
 
-    # Clean and normalize text
-    text = (text or "").replace("\r", "\n")
-    text = re.sub(r"\*+", "", text)
-    text = re.sub(r"\s{2,}", " ", text)
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if not text:
+        return []
 
-    blocks, cur_block = [], []
+    # normalize line endings
+    txt = text.replace("\r", "\n")
+    # remove repeated asterisks used for bold in some docs
+    txt = re.sub(r"\*+", "", txt)
+    # keep original text for span slicing
+    full = txt
 
-    def is_question_start(line: str) -> bool:
-        """
-        Detect start of a real question — must be numbered (1., Q1, etc.)
-        and either end with '?' or contain typical question words.
-        """
-        if re.match(r"^(?:Q?\s*\d+[\).]|\d+\.)\s*", line, re.IGNORECASE):
-            if re.match(r"^(?:Q?\s*\d+[\).]?\s*[A-D][).])", line, re.IGNORECASE):
-                return False
-            if "?" in line or re.search(r"\b(what|which|who|when|where|why|how)\b", line, re.IGNORECASE):
-                return True
-        return False
+    # candidate question headers (numbering) - do not treat "2. C)" as header because of lookahead
+    header_re = re.compile(r"(?m)^\s*(?:Q\s*)?(\d{1,3})[\).]\s*(?![A-D][\).:])")
 
-    for line in lines:
-        if is_question_start(line):
-            if cur_block:
-                blocks.append("\n".join(cur_block))
-                cur_block = []
-            cur_block.append(line)
-        else:
-            cur_block.append(line)
-    if cur_block:
-        blocks.append("\n".join(cur_block))
+    # find all header matches with their start index
+    headers = [(m.start(), m.end(), int(m.group(1))) for m in header_re.finditer(full)]
+
+    # If no headers found, fallback to older approach
+    if not headers:
+        # fallback: split by lines that start with number and a dot
+        lines = [l for l in full.split("\n") if l.strip()]
+        blocks = []
+        cur = []
+        for line in lines:
+            if re.match(r"^\s*\d+[\).]\s*", line):
+                if cur:
+                    blocks.append("\n".join(cur))
+                    cur = []
+                cur.append(line)
+            else:
+                cur.append(line)
+        if cur:
+            blocks.append("\n".join(cur))
+    else:
+        # build blocks using header spans
+        blocks = []
+        for i, (s, e, n) in enumerate(headers):
+            start = s
+            end = headers[i + 1][0] if i + 1 < len(headers) else len(full)
+            block = full[start:end].strip()
+            # skip if header line looks like title (no question words and no '?')
+            header_line = full[s:full.find("\n", s) if full.find("\n", s) != -1 else end].strip()
+            if not ("?" in header_line or re.search(r"\b(what|which|who|when|where|why|how)\b", header_line, re.IGNORECASE)):
+                # if header line is short and next lines contain options, still accept it as question
+                # otherwise skip the block
+                # check if block contains option markers A) B) C)
+                if not re.search(r"\b[A-D][\).:\-]\s", block):
+                    # likely not a real question header (could be document title)
+                    continue
+            blocks.append(block)
 
     parsed = []
     for block in blocks:
-        if not block.strip():
+        # short guard
+        if not block or len(block.strip()) < 8:
             continue
 
-        # Extract question text
-        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
-        q_text = q_match.group(1).strip() if q_match else block.strip()
+        # Question text: take header line, remove the leading number
+        first_line = block.split("\n", 1)[0]
+        qtext = re.sub(r"^\s*(?:Q\s*)?\d{1,3}[\).]\s*", "", first_line).strip()
 
-        # Skip non-question heading-type lines (no '?', no typical question words)
-        if not ("?" in q_text or re.search(r"\b(what|which|who|when|where|why|how)\b", q_text, re.IGNORECASE)):
-            continue
+        # If question text is very short, try to include following lines up to first option
+        if len(qtext) < 6:
+            # try up to first option marker
+            m_optpos = re.search(r"\b[A-D][\).:\-]\s", block)
+            if m_optpos:
+                qtext = block[:m_optpos.start()].strip()
+                qtext = re.sub(r"^\s*(?:Q\s*)?\d{1,3}[\).]\s*", "", qtext).strip()
 
-        # Extract options (A–D)
+        # --- Extract options robustly: find each A)/B)/C)/D) and slice between labels ---
         options = []
-        opt_re = re.compile(r"^[A-Da-d][).:\-]\s*(.+)$", re.MULTILINE)
-        for m in opt_re.finditer(block):
-            opt = re.sub(r"\s+", " ", m.group(1).strip())
-            options.append(opt)
-        if not options:
-            options = ["N/A", "N/A", "N/A", "N/A"]
+        # find all option label occurrences with their indices
+        opt_label_re = re.compile(r"([A-Da-d])[\).:\-]", re.IGNORECASE)
+        all_labels = list(opt_label_re.finditer(block))
+
+        if all_labels:
+            # find position of answer markers (to avoid swallowing Answer: text)
+            ans_marker = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?", block, re.IGNORECASE)
+            ans_pos = ans_marker.start() if ans_marker else len(block)
+            for j, lab in enumerate(all_labels):
+                start_idx = lab.end()
+                if j + 1 < len(all_labels):
+                    end_idx = all_labels[j + 1].start()
+                else:
+                    end_idx = ans_pos
+                opt_text = block[start_idx:end_idx].strip()
+                opt_text = re.sub(r"\s+", " ", opt_text).strip()
+                options.append(opt_text)
+        else:
+            # fallback: lines starting with A) B) etc.
+            opts = []
+            for line in block.split("\n"):
+                m = re.match(r"^\s*([A-Da-d])[\).:\-]\s*(.*)", line)
+                if m:
+                    opts.append(m.group(2).strip())
+            options = [re.sub(r"\s+", " ", o).strip() for o in opts]
+
+        # ensure exactly 4 options
         while len(options) < 4:
             options.append("N/A")
         options = options[:4]
 
-        # Detect correct answer letter or text
-        ans_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])\b", block, re.IGNORECASE)
-        correct = ans_match.group(1).upper() if ans_match else None
+        # --- Find last Answer letter in the block ---
+        ans_letter_re = re.compile(r"(?:Answer|Ans|Key)\s*[:\-]?\s*([A-Da-d])\b", re.IGNORECASE)
+        ans_matches = list(ans_letter_re.finditer(block))
+        correct_letter = None
+        correct_index = None
+        if ans_matches:
+            last_ans = ans_matches[-1]
+            correct_letter = last_ans.group(1).upper()
+            idx = ord(correct_letter) - 65
+            if 0 <= idx < len(options):
+                correct_index = idx
 
-        # Textual fallback (if "Ans: All of the above")
-        if not correct:
-            ans_text_match = re.search(r"(?:Answer|Ans|Key)\s*[:\-]?\s*(.+)", block, re.IGNORECASE)
-            if ans_text_match:
-                ans_text = ans_text_match.group(1).strip()
-                for i, o in enumerate(options):
-                    if ans_text.lower() in o.lower() or o.lower() in ans_text.lower():
-                        correct = chr(65 + i)
+        # If no letter, try textual answer after Answer: and match to option text
+        if correct_index is None:
+            ans_text_re = re.compile(r"(?:Answer|Ans|Key)\s*[:\-]?\s*(.+)", re.IGNORECASE | re.DOTALL)
+            m_alt = ans_text_re.search(block)
+            if m_alt:
+                ans_text = m_alt.group(1).strip()
+                # cut if 'Here are' etc. appears after
+                ans_text = re.split(r"(?:Here are|Here is|Here\'s)", ans_text, flags=re.IGNORECASE)[0].strip()
+                ans_text = re.sub(r"\s+", " ", ans_text)
+                # try to match to options
+                matched = False
+                for i, opt in enumerate(options):
+                    if not opt or opt == "N/A":
+                        continue
+                    if ans_text.lower() in opt.lower() or opt.lower() in ans_text.lower():
+                        correct_index = i
+                        correct_letter = chr(65 + i)
+                        matched = True
                         break
 
-        # Heuristic: if "All of the above" exists, set that as correct if not found
-        if not correct:
-            for i, o in enumerate(options):
-                if "all of the above" in o.lower():
-                    correct = chr(65 + i)
+        # Heuristic: prefer "All of the above"
+        if correct_index is None:
+            for i, opt in enumerate(options):
+                if "all of the above" in (opt or "").lower():
+                    correct_index = i
+                    correct_letter = chr(65 + i)
                     break
 
-        # Default fallback
-        correct = correct or "A"
+        # Final fallback: choose longest non-N/A option
+        if correct_index is None:
+            non_na = [(i, o) for i, o in enumerate(options) if o and o != "N/A"]
+            if non_na:
+                best = max(non_na, key=lambda x: len(x[1]))
+                correct_index = best[0]
+                correct_letter = chr(65 + correct_index)
+            else:
+                correct_index = 0
+                correct_letter = "A"
 
+        # add to parsed
         parsed.append({
-            "question": q_text,
+            "question": re.sub(r"\s+", " ", qtext).strip(),
             "options": options,
-            "correct": correct
+            "correct": correct_letter,
+            "correct_index": int(correct_index)
         })
 
-    # De-duplicate by question text (avoid duplicates from page headers or OCR)
-    unique = []
+    # cleanup: remove very short question texts and deduplicate
+    final = []
     seen = set()
     for q in parsed:
-        key = q["question"][:100]
-        if key not in seen:
-            seen.add(key)
-            unique.append(q)
+        key = q["question"][:120]
+        if len(q["question"]) < 6:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        final.append(q)
 
-    return unique
-
+    return final
 
 
 # ==========================
