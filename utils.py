@@ -59,25 +59,24 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Robust MCQ parser that can handle PDFs, DOCX, or text with mixed numbering styles.
-    Detects question blocks, extracts options, and captures correct answers accurately.
+    Robust MCQ parser that can handle multiple formats (1. / 1) / Q1. / Question 1:).
+    Extracts question text, four options, and correct answer label.
     """
 
     import re
 
-    # Normalize text
+    # Normalize and clean text
     text = text.replace("\r", "\n")
-    text = re.sub(r"\*+", "", text)  # remove asterisks
-    text = re.sub(r"\n{2,}", "\n", text)  # collapse blank lines
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"\n{2,}", "\n", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     questions = []
     q_block = []
 
-    # Identify question blocks
+    # --- STEP 1: Segment text into question blocks ---
     for line in lines:
-        # Detect start of new question (e.g. "1.", "1)", "Q1.", "Question 1" etc.)
-        if re.match(r"^(?:Q?\s*\d+[\).]|\bQuestion\s*\d+)", line, re.IGNORECASE):
+        if re.match(r"^(?:Q?\s*\d+[\).:]|\bQuestion\s*\d+)", line, re.IGNORECASE):
             if q_block:
                 questions.append(" ".join(q_block))
                 q_block = []
@@ -89,34 +88,37 @@ def parse_mcqs(text):
 
     parsed = []
 
+    # --- STEP 2: Parse each question block ---
     for qb in questions:
-        # Extract the question text
-        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
+        # Clean up question and answer hints
+        qb = re.sub(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*([A-Da-d])\b", r"@@ANS:\1", qb)
+
+        # Extract question text up to A) or 1st option
+        q_match = re.match(r"^(?:Q?\s*\d+[\).:]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
         q_text = q_match.group(1).strip() if q_match else qb
 
-        # Extract all options (A/B/C/D)
-        opts = re.findall(r"[A-Da-d][).:\-]\s*[^A-Da-d]+", qb)
-        options = []
+        # Find all options
+        opts = re.findall(r"(?:[A-Da-d][).:\-]\s*[^A-Da-d@]+)", qb)
+        clean_opts = []
         for opt in opts:
             opt_text = re.sub(r"^[A-Da-d][).:\-]\s*", "", opt).strip()
-            opt_text = re.sub(r"\s+", " ", opt_text).strip()
-            # Remove "Ans: A" if it's stuck at the end of an option
-            opt_text = re.sub(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*[A-Da-d]\b", "", opt_text).strip()
-            options.append(opt_text)
+            opt_text = re.sub(r"\s+", " ", opt_text)
+            clean_opts.append(opt_text)
 
         # Detect correct answer
-        ans = re.search(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*([A-Da-d])\b", qb)
-        correct = ans.group(1).upper() if ans else "A"
+        ans_tag = re.search(r"@@ANS:([A-Da-d])", qb)
+        correct = ans_tag.group(1).upper() if ans_tag else "A"
 
-        # Ensure consistent option count
-        if options:
-            while len(options) < 4:
-                options.append("N/A")
-            parsed.append({
-                "question": q_text,
-                "options": options[:4],
-                "correct": correct
-            })
+        # Pad / trim options
+        while len(clean_opts) < 4:
+            clean_opts.append("N/A")
+        clean_opts = clean_opts[:4]
+
+        parsed.append({
+            "question": q_text,
+            "options": clean_opts,
+            "correct": correct
+        })
 
     return parsed
 
