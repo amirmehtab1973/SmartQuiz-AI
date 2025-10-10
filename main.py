@@ -1,9 +1,8 @@
-# main.py (FULL — replace your current file)
 import os
 import json
+import re
 import streamlit as st
 import openai
-import re
 from datetime import datetime
 from utils import (
     extract_text_from_file,
@@ -17,7 +16,7 @@ from utils import (
 )
 
 # ==========================
-# CONFIG / SECRETS
+# CONFIG / SECRETS SECTION
 # ==========================
 if hasattr(st, "secrets"):
     OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
@@ -36,14 +35,23 @@ else:
 
 openai.api_key = OPENAI_API_KEY
 
+# ==========================
+# BASIC UI CONFIG
+# ==========================
+st.set_page_config(page_title="🎓 SmartQuiz AI", layout="wide")
+st.title("🎓 SmartQuiz AI – Automated Quiz Generator")
+
 if not OPENAI_API_KEY:
-    st.warning("⚠️ OpenAI API key not found in secrets (diagnostic).")
+    st.error("⚠️ OpenAI API key not found.")
+else:
+    st.success("✅ OpenAI API key loaded successfully.")
 
 # ==========================
-# STORAGE / UTILITIES
+# LOCAL DATA STORAGE
 # ==========================
 LOCAL_QUIZ_FILE = "quizzes.json"
 LOCAL_RESULTS_FILE = "results.json"
+
 
 def load_local_data(file):
     if os.path.exists(file):
@@ -54,93 +62,27 @@ def load_local_data(file):
             return []
     return []
 
+
 def save_local_data(file, data):
     with open(file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-# Ensure a quiz question object is normalized (adds correct_index etc.)
-def normalize_question_obj(q):
-    # ensure options exist and are strings
-    opts = q.get("options", [])
-    opts = [re.sub(r'\s+', ' ', (o or "")).strip() for o in opts]
-    while len(opts) < 4:
-        opts.append("N/A")
-    q["options"] = opts[:4]
 
-    # normalize correct (letter)
-    corr = q.get("correct", None)
-    corr_idx = q.get("correct_index", None)
-
-    # try to parse correct_index if present and numeric/string
-    if corr_idx is not None:
-        try:
-            corr_idx = int(corr_idx)
-            if corr_idx < 0 or corr_idx >= len(q["options"]):
-                corr_idx = 0
-        except:
-            corr_idx = None
-
-    # if corr letter provided
-    if corr and isinstance(corr, str):
-        m = re.search(r'([A-Da-d])', corr)
-        if m:
-            corr_letter = m.group(1).upper()
-            corr_idx = ord(corr_letter) - 65
-        else:
-            corr_letter = None
-    else:
-        corr_letter = None
-
-    # If still None, try to infer from correct_index or correct_text
-    if corr_idx is None:
-        # try to infer from corr text if it's not a single letter
-        if corr and isinstance(corr, str) and len(corr.strip()) > 1:
-            corr_text = corr.strip()
-            found = False
-            for i, opt in enumerate(q["options"]):
-                if corr_text.lower() in opt.lower() or opt.lower() in corr_text.lower():
-                    corr_idx = i
-                    found = True
-                    break
-            if not found:
-                corr_idx = 0
-        else:
-            corr_idx = 0
-
-    corr_idx = max(0, min(int(corr_idx), 3))
-    q["correct_index"] = corr_idx
-    q["correct"] = q.get("correct", chr(65 + corr_idx)).upper()
-    return q
-
-def normalize_quiz_in_memory(quiz):
-    qs = quiz.get("questions", [])
-    for i,q in enumerate(qs):
-        qs[i] = normalize_question_obj(q)
-    quiz["questions"] = qs
-    return quiz
-
-# Load quizzes/results and normalize in-memory
 quizzes = load_local_data(LOCAL_QUIZ_FILE)
-for i,qq in enumerate(quizzes):
-    quizzes[i] = normalize_quiz_in_memory(qq)
-
 results = load_local_data(LOCAL_RESULTS_FILE)
 
 # ==========================
-# STREAMLIT CONFIG & UI
+# SIDEBAR – MODE SWITCH
 # ==========================
-st.set_page_config(page_title="SmartQuiz AI", layout="wide")
-st.title("🎓 SmartQuiz AI – Automated Quiz Generator")
-
-if "is_admin" not in st.session_state:
-    st.session_state["is_admin"] = False
-
 mode = st.sidebar.radio("Choose Mode", ["Student", "Admin"])
 
 # ==========================
 # ADMIN PANEL
 # ==========================
 if mode == "Admin":
+    if "is_admin" not in st.session_state:
+        st.session_state["is_admin"] = False
+
     if not st.session_state["is_admin"]:
         st.subheader("🔑 Admin Login")
         username = st.text_input("Username")
@@ -153,40 +95,32 @@ if mode == "Admin":
                 st.error("❌ Invalid credentials.")
         st.stop()
 
-
-
-    # Admin logged in
     st.sidebar.success("Logged in as Admin")
-    tabs = st.tabs(["📤 Upload Document", "📚 Manage Quizzes", "📊 Student Results", "⚙️ Admin Tools"])
 
-    # Upload Document
+    tabs = st.tabs(["📤 Upload Document", "📚 Manage Quizzes", "📊 Student Results"])
+
+    # TAB 1: UPLOAD DOCUMENT
     with tabs[0]:
         st.subheader("📄 Upload New Quiz Document")
         uploaded_file = st.file_uploader("Choose a document (PDF, DOCX, or TXT)", type=["pdf", "docx", "txt"])
+
         if uploaded_file:
             file_bytes = uploaded_file.read()
             text = extract_text_from_file(file_bytes, uploaded_file.name)
-            st.text_area("Extracted Text (Debug – full)", text, height=300)
+            st.text_area("Extracted Text (Debug – Full)", text, height=400)
 
-            if not text.strip():
-                st.error("⚠️ Could not extract text from the file.")
-            else:
-                with st.spinner("Analyzing document..."):
+            if text.strip():
+                with st.spinner("🔍 Parsing document for MCQs..."):
                     is_mcq = detect_mcq(text)
-                    if is_mcq:
-                        mcqs = parse_mcqs(text)
-                        st.info(f"🧾 Detected existing MCQs in document: {len(mcqs)} found.")
-                    else:
-                        mcqs = generate_mcqs_via_openai(text, n_questions=10)
+                    mcqs = parse_mcqs(text) if is_mcq else generate_mcqs_via_openai(text)
 
-                # Normalize each question before showing/saving
-                mcqs = [normalize_question_obj(q) for q in mcqs]
+                if not mcqs:
+                    st.error("❌ No MCQs could be generated or detected.")
+                else:
+                    st.text_area("Parsed MCQs (Debug)", "\n\n".join([f"{i+1}. {q['question']} (Ans: {q['correct']})" for i, q in enumerate(mcqs)]), height=400)
+                    st.success(f"✅ {len(mcqs)} MCQs ready to save.")
 
-                if mcqs and len(mcqs) > 0:
-                    st.success(f"✅ {len(mcqs)} MCQs are ready!")
-                    st.text_area("Parsed MCQs (Debug)", "\n\n".join([f"{i+1}. {q['question']} (Ans: {q.get('correct')})" for i,q in enumerate(mcqs)]), height=200)
-
-                    quiz_title = st.text_input("Enter Quiz Title")
+                    quiz_title = st.text_input("Enter Quiz Title:")
                     if st.button("💾 Save Quiz"):
                         if not quiz_title.strip():
                             st.error("Please enter a quiz title.")
@@ -199,29 +133,23 @@ if mode == "Admin":
                             quizzes.append(quiz_obj)
                             save_local_data(LOCAL_QUIZ_FILE, quizzes)
                             st.success(f"✅ Quiz '{quiz_title}' saved successfully!")
-                else:
-                    st.error("❌ No MCQs could be detected or generated.")
 
-    # Manage Quizzes
+    # TAB 2: MANAGE QUIZZES
     with tabs[1]:
         st.subheader("🗂 Manage Quizzes")
         if not quizzes:
             st.info("No quizzes uploaded yet.")
         else:
-            for qi, q in enumerate(quizzes):
+            for q in quizzes:
                 with st.expander(q["title"]):
                     st.write(f"📅 Created: {q.get('created_at', '')}")
-                    # Show a quick preview of first question + correct index
-                    if q.get("questions"):
-                        st.write("Preview first Q:", q["questions"][0].get("question"))
-                        st.write("Correct index:", q["questions"][0].get("correct_index"), "Correct letter:", q["questions"][0].get("correct"))
-                    if st.button(f"🗑 Delete '{q['title']}'", key=f"del_{qi}"):
+                    if st.button(f"🗑 Delete '{q['title']}'", key=f"del_{q['title']}"):
                         quizzes = [x for x in quizzes if x["title"] != q["title"]]
                         save_local_data(LOCAL_QUIZ_FILE, quizzes)
                         st.warning(f"Deleted quiz '{q['title']}'")
-                        st.experimental_rerun()
+                        st.rerun()
 
-    # Student Results
+    # TAB 3: STUDENT RESULTS
     with tabs[2]:
         st.subheader("📊 Student Results")
         results = load_local_data(LOCAL_RESULTS_FILE)
@@ -240,30 +168,7 @@ if mode == "Admin":
             ]
             st.dataframe(df_data)
             excel_bytes = export_results_to_excel_bytes(df_data)
-            st.download_button(
-                "📥 Download Results (Excel)",
-                data=excel_bytes,
-                file_name="student_results.xlsx",
-            )
-
-    # Admin Tools
-    with tabs[3]:
-        st.subheader("⚙️ Admin Tools")
-        st.write("Use these tools to fix or normalize stored quizzes.")
-        if st.button("Normalize saved quizzes (persist)"):
-            changed = 0
-            for i, quiz in enumerate(quizzes):
-                updated = False
-                for j, q in enumerate(quiz.get("questions", [])):
-                    old = q.copy()
-                    quiz["questions"][j] = normalize_question_obj(q)
-                    if quiz["questions"][j] != old:
-                        updated = True
-                if updated:
-                    changed += 1
-            if changed:
-                save_local_data(LOCAL_QUIZ_FILE, quizzes)
-            st.success(f"Normalization complete. Quizzes changed: {changed}")
+            st.download_button("📥 Download Results (Excel)", data=excel_bytes, file_name="student_results.xlsx")
 
 # ==========================
 # STUDENT PANEL
@@ -273,46 +178,37 @@ elif mode == "Student":
 
     quiz_titles = [q["title"] for q in quizzes] if quizzes else []
     if not quiz_titles:
-        st.warning("No quizzes available yet. Please ask admin to upload one.")
-    else:
-        selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
-        selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
+        st.warning("No quizzes available yet. Please ask the admin to upload one.")
+        st.stop()
 
-        if selected:
-            # Ensure in-memory normalization (handles old quizzes without correct_index)
-            selected = normalize_quiz_in_memory(selected)
-            mcqs = selected.get("questions", [])
-            st.subheader(f"📘 Quiz: {selected['title']}")
+    selected_quiz = st.selectbox("Choose a quiz:", quiz_titles)
+    selected = next((q for q in quizzes if q["title"] == selected_quiz), None)
 
-            student_name = st.text_input("Your Name")
-            student_email = st.text_input("Your Email")
+    if not selected:
+        st.error("Quiz not found.")
+        st.stop()
 
-            if student_name and student_email and mcqs:
-                selected_answers = {}  # index -> selected_index (int)
+    mcqs = selected["questions"]
 
-               selected_answers = {}
+    st.subheader(f"📘 Quiz: {selected['title']}")
+    student_name = st.text_input("Your Name")
+    student_email = st.text_input("Your Email")
+
+    if student_name and student_email:
+        selected_answers = {}
 
         for i, q in enumerate(mcqs):
-            # Show full question text (preserve multi-line text, avoid truncation)
-            st.markdown(f"**Q{i+1}.**  {q.get('question', '').strip()}")
-
+            st.markdown(f"**Q{i+1}.** {q.get('question', '').strip()}")
             opts = q.get("options", [])
-            # Ensure exactly 4 options
             while len(opts) < 4:
                 opts.append("N/A")
-            labeled_options = [f"{chr(65 + j)}) {opts[j]}" for j in range(4)]
 
-            # Display radio buttons for options
+            labeled_options = [f"{chr(65 + j)}) {opts[j]}" for j in range(4)]
             choice = st.radio("", labeled_options, key=f"q_{i}")
 
-            # Extract the selected letter (A, B, C, D)
             sel_label = choice.split(")")[0].strip() if ")" in choice else ""
             sel_index = ord(sel_label) - 65 if sel_label else None
-
-            # Save selected answer index
             selected_answers[i] = sel_index
-
-            # Add a small spacing between questions
             st.write("")
 
         if st.button("Submit Quiz"):
@@ -326,47 +222,16 @@ elif mode == "Student":
 
             st.success(f"✅ You scored {score} out of {total}")
 
-                if st.button("Submit Quiz"):
-                    score = 0
-                    for i, q in enumerate(mcqs):
-                        correct_idx = q.get("correct_index")
-                        sel_idx = selected_answers.get(i)
-                        if sel_idx is not None and correct_idx is not None and int(sel_idx) == int(correct_idx):
-                            score += 1
+            attempt = {
+                "student_name": student_name,
+                "student_email": student_email,
+                "quiz_title": selected_quiz,
+                "score": score,
+                "total": total,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            results.append(attempt)
+            save_local_data(LOCAL_RESULTS_FILE, results)
 
-                    total = len(mcqs)
-                    percent = round((score / total) * 100, 2) if total else 0
-                    st.success(f"✅ You scored {score}/{total} ({percent}%)")
-
-                    # Save attempt (include per-question info)
-                    answers_for_record = []
-                    for i, q in enumerate(mcqs):
-                        sel_idx = selected_answers.get(i)
-                        sel_text = q["options"][sel_idx] if sel_idx is not None and 0 <= sel_idx < len(q["options"]) else ""
-                        answers_for_record.append({
-                            "question": q.get("question"),
-                            "selected_index": sel_idx,
-                            "selected_text": sel_text,
-                            "correct_index": q.get("correct_index"),
-                            "correct_text": q.get("options")[q.get("correct_index")] if q.get("options") and q.get("correct_index") is not None else ""
-                        })
-
-                    attempt = {
-                        "student_name": student_name,
-                        "student_email": student_email,
-                        "quiz_title": selected_quiz,
-                        "score": score,
-                        "total": total,
-                        "percent": percent,
-                        "answers": answers_for_record,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    }
-                    results.append(attempt)
-                    save_local_data(LOCAL_RESULTS_FILE, results)
-
-                    # Email result (best-effort)
-                    ok = send_result_email(student_email, student_name, selected_quiz, score, total)
-                    if ok:
-                        st.info("📧 Result emailed successfully!")
-                    else:
-                        st.info("Result saved locally (email not sent).")
+            send_result_email(student_email, student_name, selected_quiz, score, total)
+            st.info("📧 Result emailed successfully!")
