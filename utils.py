@@ -59,181 +59,135 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Defensive MCQ parser:
-    - Finds question starts by numbering OR by question words / '?'
-    - Detects cases where numbering is followed immediately by an option (e.g. "2. D) ...")
-      and looks at previous/next lines for the real question text
-    - Collects the block between question starts, extracts A-D options robustly,
-      picks the last Ans: occurrence inside that block, and returns cleaned MCQs.
+    Robust parser: normalizes label forms, removes filler phrases,
+    slices options by label positions, uses last Ans: in block.
     """
     import re
 
     if not text:
         return []
 
-    # Normalize & split into lines
+    # Normalize and clean
     text = text.replace("\r", "\n")
     text = re.sub(r"[*_]+", "", text)
-    # preserve original line order, but trim blanks
+    # Trim repeated spaces but keep line breaks for context
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
-    def is_option_line(l):
-        return bool(re.match(r'^[A-Da-d][\).:\-]\s+', l))
+    # Remove obvious filler/title lines
+    ignore_phrases = [
+        "compulsory quiz",
+        "here are some more questions",
+        "short quiz",
+        "quiz on artificial intelligence",
+    ]
+    lines = [l for l in lines if not any(p in l.lower() for p in ignore_phrases)]
 
-    def is_ans_line(l):
-        return bool(re.search(r'\bAns(?:wer)?\b', l, re.IGNORECASE))
+    combined = "\n".join(lines)
 
-    def is_numbered_header(l):
-        return bool(re.match(r'^(?:Q?\s*\d+[\).]|\d+\.)\s*', l, re.IGNORECASE))
+    # Ensure Ans: lines are on their own line to avoid swallowing next question
+    combined = re.sub(r"(Ans(?:wer)?\s*[:\-]?\s*[A-Da-d])", r"\n\1\n", combined, flags=re.IGNORECASE)
 
-    def has_question_word(l):
-        return bool(re.search(r'\b(what|which|who|when|where|why|how)\b', l, re.IGNORECASE))
+    # Split into question blocks where a line starts with numbering like "1." or "Q1."
+    q_blocks = re.split(r"(?m)(?=^(?:Q?\s*\d+[\).]\s+))", combined)
+    q_blocks = [b.strip() for b in q_blocks if len(b.strip()) > 10]
 
-    # Build candidate question start indices
-    candidates = []
-    for i, ln in enumerate(lines):
-        # skip pure option or answer lines as starts
-        if is_option_line(ln) or is_ans_line(ln):
-            continue
+    parsed = []
+    for block in q_blocks:
+        # Remove filler phrase occuring inside block (e.g. appended at end of an option)
+        block = re.sub(r'(?i)\bhere (are|is) some more .*?questions.*', '', block, flags=re.IGNORECASE)
 
-        if is_numbered_header(ln):
-            # if number is immediately followed by an option label (e.g. "2. C) ...")
-            if re.match(r'^(?:Q?\s*\d+[\).])\s*[A-Da-d][\).:\-]', ln):
-                # prefer the previous line if it looks like the question
-                if i - 1 >= 0 and has_question_word(lines[i - 1]):
-                    idx = i - 1
-                    if idx not in candidates:
-                        candidates.append(idx)
-                    continue
-                # prefer the next line if it looks like the question
-                if i + 1 < len(lines) and has_question_word(lines[i + 1]):
-                    idx = i + 1
-                    if idx not in candidates:
-                        candidates.append(idx)
-                    continue
-                # otherwise only accept this line as header if it contains a question word or '?'
-                if has_question_word(ln) or '?' in ln:
-                    if i not in candidates:
-                        candidates.append(i)
-                    continue
-                # else it's likely an inline-options-only line: skip starting here
-                continue
-            else:
-                if i not in candidates:
-                    candidates.append(i)
-                continue
+        # Standardize labels: convert variants like "A )", "A.", "A-" to "A) "
+        block_norm = re.sub(r'\b([A-Da-d])\s*[\)\.\:\-]\s*', r'\1) ', block)
 
-        # Not a numbered header: treat as question start if contains '?' or question word
-        if has_question_word(ln) or '?' in ln:
-            if i not in candidates:
-                candidates.append(i)
+        # Find all option-label positions (A) B) C) D))
+        label_re = re.compile(r'([A-Da-d])\)\s*')
+        labels = list(label_re.finditer(block_norm))
 
-    # Always sort and ensure first candidate is earliest
-    candidates = sorted(set(candidates))
-
-    # If no candidates found, try a fallback: treat any line containing '?' as candidate
-    if not candidates:
-        for i, ln in enumerate(lines):
-            if '?' in ln:
-                candidates.append(i)
-        candidates = sorted(set(candidates))
-
-    # Build blocks between candidate starts
-    blocks = []
-    for idx_pos, start_idx in enumerate(candidates):
-        end_idx = candidates[idx_pos + 1] if idx_pos + 1 < len(candidates) else len(lines)
-        block_lines = lines[start_idx:end_idx]
-        # also include following option lines if block ends before next candidate
-        # (they should already be included but this ensures we capture trailing A)/B) lines)
-        j = end_idx
-        while j < len(lines) and is_option_line(lines[j]):
-            block_lines.append(lines[j])
-            j += 1
-        block_text = " ".join(block_lines).strip()
-        if block_text:
-            blocks.append(block_text)
-
-    # If still no blocks, fallback to entire text as single block
-    if not blocks:
-        blocks = [" ".join(lines)]
-
-    mcqs = []
-    for block in blocks:
-        # Extract the last Ans: letter in the block (if any)
-        all_ans = re.findall(r'Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])', block, re.IGNORECASE)
-        correct = all_ans[-1].upper() if all_ans else None
-
-        # Remove any Ans: tokens from block for cleaner parsing
-        block_clean = re.sub(r'Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]', '', block, flags=re.IGNORECASE)
-
-        # Extract options by locating A) B) C) D) positions
-        opt_matches = list(re.finditer(r'([A-Da-d])[\).:\-]\s*', block_clean))
         options = []
-        if opt_matches:
-            for i, m in enumerate(opt_matches):
+        if labels:
+            # question text = everything before first label
+            q_start = labels[0].start()
+            q_text = block_norm[:q_start].strip()
+
+            # slice text between successive labels
+            for i, m in enumerate(labels):
                 start = m.end()
-                end = opt_matches[i + 1].start() if i + 1 < len(opt_matches) else len(block_clean)
-                opt_text = block_clean[start:end].strip()
-                # remove stray leading numbering or punctuation
-                opt_text = re.sub(r'^\s*[\d\).\-\:]+', '', opt_text)
+                end = labels[i+1].start() if i+1 < len(labels) else len(block_norm)
+                opt_text = block_norm[start:end].strip()
+
+                # Remove trailing filler if present
+                opt_text = re.sub(r'(?i)\bhere (are|is) some more .*?questions.*', '', opt_text, flags=re.IGNORECASE).strip()
                 opt_text = re.sub(r'\s+', ' ', opt_text).strip()
                 options.append(opt_text)
         else:
-            # If no labeled options found, try splitting at common separators ( " A) " already removed)
-            # as final fallback: look for "A) " tokens inline with lookahead across the text
-            # Nothing to do here; options will be padded later
-            options = []
+            # fallback: no explicit labels visible — try to infer question and inline options
+            # remove leading numbering
+            q_text = re.sub(r'^\s*(?:Q?\s*\d+[\).]?\s*){1,2}', '', block_norm).strip()
 
-        # Extract question text: everything before the first option label (if exists), else whole block
-        if opt_matches:
-            q_text = block_clean[:opt_matches[0].start()].strip()
-        else:
-            # try to remove leading numbering
-            q_text = re.sub(r'^\s*(?:Q?\s*\d+[\).]?\s*){1,2}', '', block_clean).strip()
+            # try splitting inline like "... A) option B) option ..."
+            parts = re.split(r'(?i)\s([A-Da-d])\)\s', block_norm)
+            # parts e.g. ['prefix', 'A', 'opt A', 'B', 'opt B', ...]
+            if len(parts) >= 3:
+                q_text = parts[0].strip()
+                # gather option texts after labels
+                opts = []
+                for i in range(1, len(parts)-1, 2):
+                    opts.append(parts[i+1].strip())
+                options = opts
 
-        # Heuristic: If q_text is too short (like 1-2 words), attempt to find nearest line containing question words
-        if len(q_text.split()) < 3:
-            # try to find 'what/which' phrase inside the block_clean
-            m_qw = re.search(r'(.{0,200}\b(what|which|who|when|where|why|how)\b.*?)(?=[A-D][\).:\-]|$)', block_clean, re.IGNORECASE)
-            if m_qw:
-                q_text = m_qw.group(1).strip()
-
-        # Normalize options length to 4
+        # Ensure exactly 4 options (pad with N/A if necessary)
+        options = [o for o in options if o != ""]
         while len(options) < 4:
             options.append("N/A")
         options = options[:4]
 
-        # Final attempt: if correct letter wasn't found, try to detect textual answer like "all of the above"
+        # Extract the last Ans: letter if present
+        ans_letters = re.findall(r'Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])', block, flags=re.IGNORECASE)
+        correct = ans_letters[-1].upper() if ans_letters else None
+
+        # If no letter, try textual answer match after "Ans:" (e.g. "Ans: All of the above")
         if not correct:
-            for i, opt in enumerate(options):
-                if opt and 'all of the above' in opt.lower():
-                    correct = chr(65 + i)
+            textual_ans = re.search(r'Ans(?:wer)?\s*[:\-]?\s*(.+)$', block, flags=re.IGNORECASE)
+            if textual_ans:
+                ans_text = textual_ans.group(1).strip()
+                # match to option text
+                for idx, opt in enumerate(options):
+                    if ans_text.lower() in opt.lower() or opt.lower() in ans_text.lower():
+                        correct = chr(65 + idx)
+                        break
+
+        # Heuristic: pick "All of the above" if present when no explicit answer
+        if not correct:
+            for idx, opt in enumerate(options):
+                if 'all of the above' in (opt or '').lower():
+                    correct = chr(65 + idx)
                     break
 
-        # Default to A if still unknown
+        # default fallback
         if not correct:
-            correct = "A"
+            correct = 'A'
 
-        # Clean question text
-        q_text = re.sub(r'^\s*\d+[\).]?\s*', '', q_text).strip()
-        if len(q_text) < 3:
-            # skip if still useless
+        # Clean question text: strip leading numbering leftovers
+        q_text = re.sub(r'^\s*(?:Q?\s*\d+[\).]?\s*){1,2}', '', q_text).strip()
+        if len(q_text.split()) < 3:
+            # skip if still too short to be a valid question
             continue
 
-        mcqs.append({
+        parsed.append({
             "question": q_text,
             "options": options,
             "correct": correct
         })
 
-    # de-duplicate by question text and return
-    seen = set()
+    # deduplicate by question text
     final = []
-    for q in mcqs:
-        key = q["question"].strip().lower()
+    seen = set()
+    for q in parsed:
+        key = q["question"].lower()
         if key not in seen:
             seen.add(key)
             final.append(q)
+
     return final
 
 
