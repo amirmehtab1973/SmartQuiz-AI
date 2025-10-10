@@ -236,6 +236,7 @@ def parse_mcqs(text):
             final.append(q)
     return final
 
+
 # ==========================
 # GENERATE MCQs USING OPENAI
 # ==========================
