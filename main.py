@@ -290,28 +290,41 @@ elif mode == "Student":
             if student_name and student_email and mcqs:
                 selected_answers = {}  # index -> selected_index (int)
 
-       for i, q in enumerate(mcqs):
+               selected_answers = {}
+
+        for i, q in enumerate(mcqs):
             # Show full question text (preserve multi-line text, avoid truncation)
             st.markdown(f"**Q{i+1}.**  {q.get('question', '').strip()}")
-        
+
             opts = q.get("options", [])
             # Ensure exactly 4 options
-        while len(opts) < 4:
+            while len(opts) < 4:
                 opts.append("N/A")
             labeled_options = [f"{chr(65 + j)}) {opts[j]}" for j in range(4)]
-        
+
             # Display radio buttons for options
             choice = st.radio("", labeled_options, key=f"q_{i}")
-        
+
             # Extract the selected letter (A, B, C, D)
             sel_label = choice.split(")")[0].strip() if ")" in choice else ""
             sel_index = ord(sel_label) - 65 if sel_label else None
-        
+
             # Save selected answer index
             selected_answers[i] = sel_index
-        
+
             # Add a small spacing between questions
             st.write("")
+
+        if st.button("Submit Quiz"):
+            score = 0
+            total = len(mcqs)
+            for i, q in enumerate(mcqs):
+                correct_letter = q.get("correct", "A").strip().upper()
+                correct_index = ord(correct_letter) - 65 if correct_letter in "ABCD" else 0
+                if selected_answers.get(i) == correct_index:
+                    score += 1
+
+            st.success(f"✅ You scored {score} out of {total}")
 
                 if st.button("Submit Quiz"):
                     score = 0
