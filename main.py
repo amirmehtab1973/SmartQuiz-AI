@@ -290,25 +290,28 @@ elif mode == "Student":
             if student_name and student_email and mcqs:
                 selected_answers = {}  # index -> selected_index (int)
 
-                for i, q in enumerate(mcqs):
-                    st.markdown(f"**Q{i+1}. {q.get('question','').strip()}**")
-                    opts = q.get("options", [])
-                    # labeled options with A) B) C) D)
-                    labeled_options = [f"{chr(65 + j)}) {opts[j]}" for j in range(len(opts))]
-                    # ensure 4 labels
-                    while len(labeled_options) < 4:
-                        idx = len(labeled_options)
-                        labeled_options.append(f"{chr(65 + idx)}) N/A")
-                        opts.append("N/A")
+               for i, q in enumerate(mcqs):
+    # Show full question text (preserve multi-line text, avoid truncation)
+    st.markdown(f"**Q{i+1}.**  {q.get('question', '').strip()}")
 
-                    choice = st.radio("", labeled_options, key=f"q_{i}")
-                    sel_label = choice.split(")")[0].strip() if ")" in choice else ""
-                    try:
-                        sel_index = ord(sel_label) - 65 if sel_label else None
-                    except:
-                        sel_index = None
-                    selected_answers[i] = sel_index
-                    st.write("")
+    opts = q.get("options", [])
+    # Ensure exactly 4 options
+    while len(opts) < 4:
+        opts.append("N/A")
+    labeled_options = [f"{chr(65 + j)}) {opts[j]}" for j in range(4)]
+
+    # Display radio buttons for options
+    choice = st.radio("", labeled_options, key=f"q_{i}")
+
+    # Extract the selected letter (A, B, C, D)
+    sel_label = choice.split(")")[0].strip() if ")" in choice else ""
+    sel_index = ord(sel_label) - 65 if sel_label else None
+
+    # Save selected answer index
+    selected_answers[i] = sel_index
+
+    # Add a small spacing between questions
+    st.write("")
 
                 if st.button("Submit Quiz"):
                     score = 0
