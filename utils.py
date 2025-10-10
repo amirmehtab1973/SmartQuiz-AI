@@ -59,19 +59,20 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Final, stable MCQ parser (v3)
-    ✅ Handles 1. / 1) / Q1 / i)
-    ✅ Avoids duplicate numbering
-    ✅ Captures correct answers properly
-    ✅ Ensures 4 clean options
+    Final, stable MCQ parser (v4)
+    ✅ Handles 1., 1), Q1, i)
+    ✅ Prevents mid-line splitting
+    ✅ Keeps options grouped correctly
+    ✅ Correctly extracts answers (Ans: X)
     """
 
+    import re
     text = text.replace("\r", "")
     text = re.sub(r"[*_]+", "", text)
     text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Remove intro or filler lines
+    # Clean intro/filler lines
     ignore_phrases = [
         "compulsory quiz",
         "short quiz",
@@ -80,55 +81,55 @@ def parse_mcqs(text):
     ]
     lines = [l for l in lines if not any(p in l.lower() for p in ignore_phrases)]
 
-    joined = " ".join(lines)
+    # Combine lines for processing
+    combined = "\n".join(lines)
 
-    # Split questions safely — avoid double numbering
-    q_blocks = re.split(
-        r"(?<!\d)(?:\bQ?\s*\d+[\).]|[ivxlcdm]+\))", joined, flags=re.IGNORECASE
-    )
-    q_blocks = [q.strip() for q in q_blocks if len(q.strip()) > 20]
+    # --- Split only where the line STARTS with numbering like 1., 2), Q1 ---
+    q_blocks = re.split(r"(?m)^(?:Q?\s*\d+[\).])\s*", combined)
+    q_blocks = [q.strip() for q in q_blocks if len(q.strip()) > 10]
 
     mcqs = []
-    for qblock in q_blocks:
-        # Extract correct answer
-        ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", qblock, re.IGNORECASE)
+    for block in q_blocks:
+        # Find correct answer
+        ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", block, re.IGNORECASE)
         correct = ans_match.group(1).upper() if ans_match else "A"
-        qblock = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", qblock, flags=re.IGNORECASE)
+        block = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", block, flags=re.IGNORECASE)
 
-        # Find options (A) to D))
-        opts = re.findall(r"(?:^|\s)([A-Da-d][).:\-]\s*[^A-Da-d]+)", qblock)
-        options = [re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip() for o in opts if o.strip()]
+        # Split by options (A, B, C, D)
+        parts = re.split(r"(?m)(?=^[A-Da-d][).:\-]\s+)", block)
+        if len(parts) > 1:
+            q_text = parts[0].strip()
+            opts = [re.sub(r"^[A-Da-d][).:\-]\s*", "", p).strip() for p in parts[1:]]
+        else:
+            q_text = block.strip()
+            opts = []
 
-        # Extract question text before first option
-        q_split = re.split(r"[A-Da-d][).:\-]\s*", qblock, maxsplit=1)
-        q_text = q_split[0].strip() if q_split else qblock
-        q_text = re.sub(r"^\d+[\).]?\s*", "", q_text).strip()
-
-        # Skip invalid fragments
+        # Skip any fragment that’s too short
         if len(q_text.split()) < 3:
             continue
 
-        # Clean options to always have 4
-        while len(options) < 4:
-            options.append("N/A")
-        options = options[:4]
+        # Ensure 4 options
+        while len(opts) < 4:
+            opts.append("N/A")
+        opts = opts[:4]
 
         mcqs.append({
             "question": q_text,
-            "options": options,
+            "options": opts,
             "correct": correct
         })
 
     # Deduplicate by question text
-    unique_mcqs = []
+    unique = []
     seen = set()
     for q in mcqs:
         qt = q["question"].lower()
         if qt not in seen:
             seen.add(qt)
-            unique_mcqs.append(q)
+            unique.append(q)
 
-    return unique_mcqs
+    return unique
+
 
 
 # ==========================
