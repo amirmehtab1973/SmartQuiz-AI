@@ -290,13 +290,13 @@ elif mode == "Student":
             if student_name and student_email and mcqs:
                 selected_answers = {}  # index -> selected_index (int)
 
-               for i, q in enumerate(mcqs):
+       for i, q in enumerate(mcqs):
             # Show full question text (preserve multi-line text, avoid truncation)
             st.markdown(f"**Q{i+1}.**  {q.get('question', '').strip()}")
         
             opts = q.get("options", [])
             # Ensure exactly 4 options
-            while len(opts) < 4:
+        while len(opts) < 4:
                 opts.append("N/A")
             labeled_options = [f"{chr(65 + j)}) {opts[j]}" for j in range(4)]
         
