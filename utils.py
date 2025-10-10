@@ -59,8 +59,11 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Robust MCQ parser that can handle multiple formats (1. / 1) / Q1. / Question 1:).
-    Extracts question text, four options, and correct answer label.
+    Final robust MCQ parser.
+    - Handles numbering like '1.', '1)', 'Q1.', 'Question 1:'
+    - Ignores quiz titles or introductions
+    - Extracts exactly one question per block with up to 4 options
+    - Supports 'Ans: X' or 'Answer: X' formats
     """
 
     import re
@@ -71,33 +74,38 @@ def parse_mcqs(text):
     text = re.sub(r"\n{2,}", "\n", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
+    # --- STEP 1: combine into question blocks ---
     questions = []
     q_block = []
+    started = False
 
-    # --- STEP 1: Segment text into question blocks ---
     for line in lines:
+        # Match only *real* question numbering formats
         if re.match(r"^(?:Q?\s*\d+[\).:]|\bQuestion\s*\d+)", line, re.IGNORECASE):
+            started = True
             if q_block:
                 questions.append(" ".join(q_block))
                 q_block = []
             q_block.append(line)
         else:
-            q_block.append(line)
+            # Ignore any text before first numbered question
+            if started:
+                q_block.append(line)
     if q_block:
         questions.append(" ".join(q_block))
 
     parsed = []
 
-    # --- STEP 2: Parse each question block ---
+    # --- STEP 2: parse each block ---
     for qb in questions:
-        # Clean up question and answer hints
+        # Replace answer hints for safe capture
         qb = re.sub(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*([A-Da-d])\b", r"@@ANS:\1", qb)
 
-        # Extract question text up to A) or 1st option
+        # Extract question text before first A/B/C/D
         q_match = re.match(r"^(?:Q?\s*\d+[\).:]?\s*)(.*?)(?=\s+[A-Da-d][).:])", qb)
         q_text = q_match.group(1).strip() if q_match else qb
 
-        # Find all options
+        # Extract options cleanly
         opts = re.findall(r"(?:[A-Da-d][).:\-]\s*[^A-Da-d@]+)", qb)
         clean_opts = []
         for opt in opts:
@@ -109,7 +117,7 @@ def parse_mcqs(text):
         ans_tag = re.search(r"@@ANS:([A-Da-d])", qb)
         correct = ans_tag.group(1).upper() if ans_tag else "A"
 
-        # Pad / trim options
+        # Pad/trim options
         while len(clean_opts) < 4:
             clean_opts.append("N/A")
         clean_opts = clean_opts[:4]
@@ -120,7 +128,13 @@ def parse_mcqs(text):
             "correct": correct
         })
 
-    return parsed
+    # --- STEP 3: filter out intros like "Compulsory Quiz..." ---
+    filtered = []
+    for p in parsed:
+        if len([o for o in p["options"] if len(o) > 2]) >= 2:  # must have 2+ valid options
+            filtered.append(p)
+
+    return filtered
 
 # ==========================
 # GENERATE MCQs USING OPENAI
