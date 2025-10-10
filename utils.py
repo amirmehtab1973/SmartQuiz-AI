@@ -59,32 +59,38 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Final parse_mcqs(): handles multi-line options, titles, various numbering,
-    and accurate 'Ans:' extraction.
+    Final version of parse_mcqs() – handles multi-line options, multiple numbering formats,
+    and extracts correct answers accurately from text-based quiz documents.
     """
 
     import re
 
-    # Normalize and clean text
+    # Clean text
     text = text.replace("\r", "\n")
     text = re.sub(r"\*+", "", text)
-    text = re.sub(r"\n{2,}", "\n", text)
+    text = re.sub(r"\n{2,}", "\n", text).strip()
+
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # --- Merge broken lines (e.g. split A) Virtual assistants like Siri or\nAlexa)
+    # --- Smartly merge broken lines (continuations)
     merged = []
     for i, line in enumerate(lines):
-        # If the line doesn't start like "A)" but previous line was an option → merge it
-        if i > 0 and not re.match(r"^[A-D][).:\-]\s*", line) and re.match(r"^[A-D][).:\-]\s*", lines[i - 1]):
-            merged[-1] = merged[-1] + " " + line
-        else:
+        # If line starts like A) or 1. etc., keep as new entry
+        if re.match(r"^(Q?\s*\d+[\).:]|[A-D][).:])\s*", line, re.IGNORECASE):
             merged.append(line)
+        else:
+            # Otherwise, append to previous line (continuation)
+            if merged:
+                merged[-1] += " " + line
+            else:
+                merged.append(line)
     lines = merged
 
-    # --- Group by question number
-    blocks, current = [], []
+    # --- Group into question blocks
+    blocks = []
+    current = []
     for line in lines:
-        if re.match(r"^(?:Q?\s*\d+[\).:]|\bQuestion\s*\d+)", line, re.IGNORECASE):
+        if re.match(r"^(Q?\s*\d+[\).:]|Question\s*\d+)", line, re.IGNORECASE):
             if current:
                 blocks.append(" ".join(current))
             current = [line]
@@ -96,40 +102,40 @@ def parse_mcqs(text):
     mcqs = []
     for block in blocks:
         # Skip quiz titles or non-question text
-        if not re.search(r"\b[A-D][).:\-]", block):
+        if not re.search(r"\b[A-D][).:]\s*", block):
             continue
 
-        # Find answer key
+        # Extract answer (e.g., Ans: C)
         ans_match = re.search(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*([A-D])\b", block)
         correct = ans_match.group(1).upper() if ans_match else "A"
 
-        # Extract question
-        q_match = re.match(r"^(?:Q?\s*\d+[\).:]?\s*)(.*?)(?=\s+[A-D][).:\-])", block)
-        q_text = q_match.group(1).strip() if q_match else block
+        # Extract question text (up to first option)
+        q_match = re.match(r"^(?:Q?\s*\d+[\).:]\s*)(.*?)(?=\s+[A-D][).:])", block)
+        question = q_match.group(1).strip() if q_match else block.strip()
 
-        # Extract options A–D
-        opts = re.findall(r"[A-D][).:\-]\s*([^A-D@]+)", block)
-        options = [re.sub(r"\s+", " ", o).strip() for o in opts if o.strip()]
+        # Extract options (A–D)
+        opts = re.findall(r"[A-D][).:]\s*([^A-D]+)", block)
+        opts = [re.sub(r"\s+", " ", o).strip() for o in opts if o.strip()]
 
-        # Clean "Ans: X" remnants
-        options = [re.sub(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*[A-D]\b", "", o).strip() for o in options]
+        # Remove "Ans: X" from options
+        opts = [re.sub(r"(?i)\bAns(?:wer)?\s*[:\-]?\s*[A-D]\b", "", o).strip() for o in opts]
 
-        # Pad/truncate to exactly 4 options
-        while len(options) < 4:
-            options.append("N/A")
-        options = options[:4]
+        # Pad/truncate to 4
+        while len(opts) < 4:
+            opts.append("N/A")
+        opts = opts[:4]
 
-        # Add question to list
+        # Final append
         mcqs.append({
-            "question": q_text,
-            "options": options,
+            "question": question,
+            "options": opts,
             "correct": correct
         })
 
-    # Filter out junk blocks (titles)
-    filtered = [m for m in mcqs if len([o for o in m["options"] if len(o) > 2]) >= 2]
+    # Filter out unwanted intro blocks
+    mcqs = [m for m in mcqs if len([o for o in m["options"] if len(o) > 2]) >= 2]
 
-    return filtered
+    return mcqs
 
 # ==========================
 # GENERATE MCQs USING OPENAI
