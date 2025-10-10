@@ -130,6 +130,7 @@ def parse_mcqs(text):
     return parsed
 
 
+
 # ==========================
 # GENERATE MCQs USING OPENAI
 # ==========================
