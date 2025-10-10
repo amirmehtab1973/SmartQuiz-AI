@@ -68,67 +68,55 @@ def detect_mcq(text):
 # ==========================
 def parse_mcqs(text):
     """
-    Ultra-robust MCQ parser that handles mixed formats, asterisks, PDFs, and misplaced options.
-    It ensures the correct answer (Ans: X) is attached to the right question.
+    Final stable MCQ parser – correctly extracts 1), 1., Q1, or *1 formats.
+    Ensures correct answer alignment and skips stray option lines.
     """
+
     import re
 
-    # 1️⃣ Clean text
+    # Clean text
+    text = text.replace("\r", "")
     text = re.sub(r"[*_]+", "", text)
-    text = text.replace("\r", "").strip()
+    text = re.sub(r"\s{2,}", " ", text)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Remove noise lines (headers, “Here are some more questions” etc.)
-    ignore_phrases = [
-        "compulsory quiz", "here are some more", "day", "short quiz"
+    # Remove common noise
+    ignore_lines = [
+        "compulsory quiz", "here are some more questions", "day", "short quiz"
     ]
-    lines = [l for l in lines if not any(p in l.lower() for p in ignore_phrases)]
+    lines = [l for l in lines if not any(p in l.lower() for p in ignore_lines)]
 
-    # 2️⃣ Group lines into question blocks
-    blocks = []
-    current = []
+    # Join split lines correctly
+    joined = " ".join(lines)
 
-    for line in lines:
-        # Detect question start formats: 1., 1), Q1., i)
-        if re.match(r"^(?:Q?\s*\d+[\).]|[ivxlcdm]+\))", line, re.IGNORECASE):
-            if current:
-                blocks.append(" ".join(current))
-                current = []
-            current.append(line)
-        else:
-            current.append(line)
-    if current:
-        blocks.append(" ".join(current))
+    # Split into question blocks using patterns like 1.  1)  Q1.  i)
+    question_splits = re.split(r"(?:(?:^|\s)(?:Q?\s*\d+[\).]|[ivxlcdm]+\)))", joined)
+    # the first split may be junk before first question
+    question_splits = [q.strip() for q in question_splits if len(q.strip()) > 10]
 
     mcqs = []
-    for block in blocks:
-        # Skip if it’s too short
-        if len(block.split()) < 3:
+    for qblock in question_splits:
+        # Extract answer first
+        ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", qblock, re.IGNORECASE)
+        correct = ans_match.group(1).upper() if ans_match else "A"
+        qblock = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", qblock, flags=re.IGNORECASE)
+
+        # Find all options (A-D)
+        options = re.findall(r"(?:^|\s)([A-Da-d][).:\-]\s*[^A-Da-d]+)", qblock)
+        options = [re.sub(r"^[A-Da-d][).:\-]\s*", "", o).strip() for o in options if o.strip()]
+
+        # Extract question (text before first A)/B))
+        qtext_match = re.split(r"[A-Da-d][).:\-]\s*", qblock, maxsplit=1)
+        q_text = qtext_match[0].strip() if qtext_match else qblock
+
+        # Remove filler lines
+        if len(q_text.split()) < 3 or "quiz" in q_text.lower():
             continue
 
-        # Extract answer first
-        ans_match = re.search(r"Ans(?:wer)?\s*[:\-]?\s*([A-Da-d])", block, re.IGNORECASE)
-        correct = ans_match.group(1).upper() if ans_match else "A"
-
-        # Remove “Ans: X” from block text
-        block = re.sub(r"Ans(?:wer)?\s*[:\-]?\s*[A-Da-d]", "", block, flags=re.IGNORECASE)
-
-        # Extract question part (everything before first option)
-        q_match = re.match(r"^(?:Q?\s*\d+[\).]?\s*)(.*?)(?=\s+[A-Da-d][).:])", block)
-        q_text = q_match.group(1).strip() if q_match else block
-
-        # Extract all options
-        options = re.findall(r"[A-Da-d][).:\-]\s*([^A-Da-d]+)", block)
-        options = [re.sub(r"\s+", " ", o).strip() for o in options if o.strip()]
-
-        # Normalize options length
+        # Normalize options
         while len(options) < 4:
             options.append("N/A")
         options = options[:4]
-
-        # Skip junk lines (like “Artificial Intelligence” alone)
-        if len(q_text.split()) < 4:
-            continue
 
         mcqs.append({
             "question": q_text,
@@ -136,15 +124,17 @@ def parse_mcqs(text):
             "correct": correct
         })
 
-    # 3️⃣ Deduplicate questions
+    # Remove duplicates by question text
     unique_mcqs = []
     seen = set()
     for q in mcqs:
-        if q["question"].lower() not in seen:
-            seen.add(q["question"].lower())
+        q_clean = q["question"].lower()
+        if q_clean not in seen:
+            seen.add(q_clean)
             unique_mcqs.append(q)
 
     return unique_mcqs
+
 
 # ==========================
 # GENERATE MCQs USING OPENAI
